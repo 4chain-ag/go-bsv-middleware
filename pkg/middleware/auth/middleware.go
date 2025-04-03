@@ -11,16 +11,17 @@ import (
 	"github.com/4chain-ag/go-bsv-middleware/pkg/temporary/sessionmanager"
 	"github.com/4chain-ag/go-bsv-middleware/pkg/temporary/wallet"
 	"github.com/4chain-ag/go-bsv-middleware/pkg/transport"
-	"github.com/4chain-ag/go-bsv-middleware/pkg/transport/http"
+	httptransport "github.com/4chain-ag/go-bsv-middleware/pkg/transport/http"
 )
 
 // Middleware implements BRC-103/104 authentication
 type Middleware struct {
-	wallet               wallet.WalletInterface
-	sessionManager       sessionmanager.SessionManagerInterface
-	transport            transport.TransportInterface
-	allowUnauthenticated bool
-	logger               *slog.Logger
+	wallet                  wallet.WalletInterface
+	sessionManager          sessionmanager.SessionManagerInterface
+	transport               transport.TransportInterface
+	allowUnauthenticated    bool
+	logger                  *slog.Logger
+	certificateRequirements *transport.RequestedCertificateSet
 }
 
 // ResponseRecorder is a custom ResponseWriter to capture response body and status
@@ -89,16 +90,16 @@ func New(opts Options) *Middleware {
 
 	middlewareLogger.Debug(" Creating new auth middleware")
 
-	t := httptransport.New(opts.Wallet, opts.SessionManager, opts.AllowUnauthenticated, opts.Logger)
-
+	t := httptransport.New(opts.Wallet, opts.SessionManager, opts.AllowUnauthenticated, opts.Logger, opts.CertificatesToRequest)
 	middlewareLogger.Debug(" transport created")
 
 	return &Middleware{
-		wallet:               opts.Wallet,
-		sessionManager:       opts.SessionManager,
-		transport:            t,
-		allowUnauthenticated: opts.AllowUnauthenticated,
-		logger:               middlewareLogger,
+		wallet:                  opts.Wallet,
+		sessionManager:          opts.SessionManager,
+		transport:               t,
+		allowUnauthenticated:    opts.AllowUnauthenticated,
+		certificateRequirements: opts.CertificatesToRequest,
+		logger:                  middlewareLogger,
 	}
 }
 

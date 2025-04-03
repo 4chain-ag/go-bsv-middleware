@@ -33,3 +33,16 @@ type GetPublicKeyOptions struct {
 	// ForSelf is a flag to return a key for self
 	ForSelf bool `json:"forSelf,omitempty"`
 }
+
+// VerifiableCertificate is a certificate with a keyring for verifier and optional decrypted fields
+type VerifiableCertificate struct {
+	Certificate
+	Keyring         map[string]string  `json:"keyring"`
+	DecryptedFields *map[string]string `json:"decryptedFields,omitempty"`
+}
+
+// MasterCertificate is a certificate with a master keyring
+type MasterCertificate struct {
+	Certificate
+	MasterKeyring map[string]string `json:"masterKeyring"`
+}
