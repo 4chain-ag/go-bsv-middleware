@@ -91,17 +91,10 @@ func (s *MockHTTPServer) SendNonGeneralRequest(t *testing.T, msg *transport.Auth
 }
 
 // SendGeneralRequest sends a general request to the server
-func (s *MockHTTPServer) SendGeneralRequest(t *testing.T, method, path string, headers map[string]string, body any) (*http.Response, error) {
-	url := s.URL() + path
-
-	var dataBytes []byte
-	var err error
-	if body != nil {
-		dataBytes, err = json.Marshal(body)
-		require.Nil(t, err)
-	}
-
-	response := prepareAndCallRequest(t, method, url, headers, dataBytes)
+func (s *MockHTTPServer) SendGeneralRequest(t *testing.T, request *http.Request) (*http.Response, error) {
+	client := &http.Client{}
+	response, err := client.Do(request)
+	require.Nil(t, err)
 
 	return response, nil
 }

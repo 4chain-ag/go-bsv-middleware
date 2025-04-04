@@ -15,8 +15,8 @@ import (
 	"github.com/4chain-ag/go-bsv-middleware/pkg/middleware/auth"
 	"github.com/4chain-ag/go-bsv-middleware/pkg/temporary/wallet"
 	walletFixtures "github.com/4chain-ag/go-bsv-middleware/pkg/temporary/wallet/test"
-	"github.com/4chain-ag/go-bsv-middleware/pkg/test/mocks"
 	"github.com/4chain-ag/go-bsv-middleware/pkg/transport"
+	"github.com/4chain-ag/go-bsv-middleware/pkg/utils"
 )
 
 func main() {
@@ -80,7 +80,7 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func callInitialRequest(mockedWallet wallet.WalletInterface) *transport.AuthMessage {
-	requestData := mocks.PrepareInitialRequestBody(mockedWallet)
+	requestData := utils.PrepareInitialRequestBody(mockedWallet)
 	jsonData, err := json.Marshal(requestData)
 	if err != nil {
 		log.Fatalf("Failed to marshal request: %v", err)
@@ -129,7 +129,7 @@ func callPingEndpoint(mockedWallet wallet.WalletInterface, response *transport.A
 		log.Fatalf("Failed to create request: %v", err)
 	}
 
-	headers, err := mocks.PrepareGeneralRequestHeaders(mockedWallet, response, "/ping", "GET")
+	headers, err := utils.PrepareGeneralRequestHeaders(mockedWallet, response, req)
 	if err != nil {
 		panic(err)
 	}
