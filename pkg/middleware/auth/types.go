@@ -7,8 +7,8 @@ import (
 	"github.com/4chain-ag/go-bsv-middleware/pkg/temporary/wallet"
 )
 
-// Options configures the auth middleware
-type Options struct {
+// Config configures the auth middleware
+type Config struct {
 	Wallet               wallet.WalletInterface
 	SessionManager       sessionmanager.SessionManagerInterface
 	AllowUnauthenticated bool

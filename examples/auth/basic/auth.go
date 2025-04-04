@@ -32,7 +32,7 @@ func main() {
 	// - authentication enabled
 	// - custom logger
 	// - mocked wallet with predefined nonces
-	opts := auth.Options{
+	opts := auth.Config{
 		AllowUnauthenticated: false,
 		Logger:               logger,
 		Wallet:               serverMockedWallet,

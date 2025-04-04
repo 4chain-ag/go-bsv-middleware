@@ -111,7 +111,7 @@ func (s *MockHTTPServer) createMiddleware() {
 		s.logger = slog.New(slog.DiscardHandler)
 	}
 
-	opts := auth.Options{
+	opts := auth.Config{
 		AllowUnauthenticated: s.allowUnauthenticated,
 		Logger:               s.logger,
 		Wallet:               CreateServerMockWallet(),

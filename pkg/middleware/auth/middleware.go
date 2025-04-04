@@ -72,7 +72,7 @@ func (r *responseRecorder) Finalize() error {
 }
 
 // New creates a new auth middleware
-func New(opts Options) *Middleware {
+func New(opts Config) *Middleware {
 	if opts.SessionManager == nil {
 		opts.SessionManager = sessionmanager.NewSessionManager()
 	}

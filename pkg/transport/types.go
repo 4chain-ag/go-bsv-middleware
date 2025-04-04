@@ -6,11 +6,13 @@ import (
 	"github.com/4chain-ag/go-bsv-middleware/pkg/temporary/wallet"
 )
 
+type contextKey string
+
 const (
 	// AuthVersion is the version of the authentication protocol.
 	AuthVersion = "0.1"
 	// IdentityKey is the key used to store the identity key in the context.
-	IdentityKey = "identityKey"
+	IdentityKey contextKey = "identity"
 	// RequestID is the key used to store the request ID in the context.
 	RequestID = "requestID"
 )
