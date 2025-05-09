@@ -4,7 +4,6 @@ import (
 	"errors"
 	"testing"
 
-	walletFixtures "github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet/test"
 	"github.com/bsv-blockchain/go-bsv-middleware/test/assert"
 	"github.com/bsv-blockchain/go-bsv-middleware/test/mocks"
 	"github.com/stretchr/testify/require"
@@ -19,9 +18,9 @@ func TestHandshakeHappyPath(t *testing.T) {
 	defer server.Close()
 
 	clientWallet := mocks.CreateClientMockWallet()
-	initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
+	initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
 
-	serverWallet.OnCreateNonceOnce(walletFixtures.DefaultNonces[0], nil)
+	serverWallet.OnCreateNonceOnce(mocks.DefaultNonces[0], nil)
 	serverWallet.OnCreateSignatureOnce(prepareExampleSignature(t), nil)
 	serverWallet.OnGetPublicKeyOnce(prepareExampleIdentityKey(t), nil)
 
@@ -37,9 +36,10 @@ func TestHandshakeHappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.InitialResponseAuthMessage(t, authMessage)
 
-	session := sessionManager.GetSession(initialRequest.IdentityKey)
+	session, err := sessionManager.GetSession(initialRequest.IdentityKey.ToDERHex())
+	require.NoError(t, err)
 	require.NotNil(t, session, "Session should have been created with client's identity key")
-	require.Equal(t, initialRequest.InitialNonce, *session.PeerNonce, "Session nonce should match")
+	require.Equal(t, initialRequest.InitialNonce, session.PeerNonce, "Session nonce should match")
 }
 
 func TestMissingRequiredFields(t *testing.T) {
@@ -54,8 +54,8 @@ func TestMissingRequiredFields(t *testing.T) {
 
 	t.Run("missing identity key", func(t *testing.T) {
 		// given
-		initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
-		initialRequest.IdentityKey = ""
+		initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
+		initialRequest.IdentityKey = nil
 
 		serverWallet.OnCreateNonceOnce("", errors.New("missing required fields in initial request"))
 
@@ -70,7 +70,7 @@ func TestMissingRequiredFields(t *testing.T) {
 
 	t.Run("missing initial nonce", func(t *testing.T) {
 		// given
-		initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
+		initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
 		initialRequest.InitialNonce = ""
 
 		serverWallet.OnCreateNonceOnce("", errors.New("missing required fields in initial request"))
@@ -86,8 +86,8 @@ func TestMissingRequiredFields(t *testing.T) {
 
 	t.Run("missing both fields", func(t *testing.T) {
 		// given
-		initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
-		initialRequest.IdentityKey = ""
+		initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
+		initialRequest.IdentityKey = nil
 		initialRequest.InitialNonce = ""
 
 		// when
@@ -109,7 +109,7 @@ func TestUnsupportedVersion(t *testing.T) {
 	defer server.Close()
 
 	clientWallet := mocks.CreateClientMockWallet()
-	initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
+	initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
 	initialRequest.Version = "0.2"
 
 	// when
@@ -130,7 +130,7 @@ func TestInvalidNonceFormat(t *testing.T) {
 	defer server.Close()
 
 	clientWallet := mocks.CreateClientMockWallet()
-	initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
+	initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
 	initialRequest.InitialNonce = "this-is-not-valid-base64!"
 
 	serverWallet.OnCreateNonceOnce("", errors.New("invalid nonce format"))
@@ -153,10 +153,10 @@ func TestReplayAttack(t *testing.T) {
 	defer server.Close()
 
 	clientWallet := mocks.CreateClientMockWallet()
-	initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
+	initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
 
 	// First request should succeed
-	serverWallet.OnCreateNonceOnce(walletFixtures.DefaultNonces[0], nil)
+	serverWallet.OnCreateNonceOnce(mocks.DefaultNonces[0], nil)
 	serverWallet.OnCreateSignatureOnce(prepareExampleSignature(t), nil)
 	serverWallet.OnGetPublicKeyOnce(prepareExampleIdentityKey(t), nil)
 

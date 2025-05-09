@@ -4,12 +4,11 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/sessionmanager"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
-	walletFixtures "github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet/test"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/transport"
+	"github.com/bsv-blockchain/go-bsv-middleware/pkg/interfaces"
 	"github.com/bsv-blockchain/go-bsv-middleware/test/assert"
 	"github.com/bsv-blockchain/go-bsv-middleware/test/mocks"
+	"github.com/bsv-blockchain/go-sdk/auth"
+	"github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,7 +75,7 @@ func TestAuthMiddleware_GeneralRequest_Signature(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 
 		serverWallet.OnVerifyNonceOnce(true, nil)
@@ -110,7 +109,7 @@ func TestAuthMiddleware_GeneralRequest_SessionManager(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 
 		serverWallet.OnVerifyNonceOnce(true, nil)
@@ -129,11 +128,11 @@ func TestAuthMiddleware_GeneralRequest_SessionManager(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 
 		serverWallet.OnVerifyNonceOnce(true, nil)
-		sessionManager.OnGetSessionOnce(authMessage.InitialNonce, &sessionmanager.PeerSession{IsAuthenticated: false})
+		sessionManager.OnGetSessionOnce(authMessage.InitialNonce, &auth.PeerSession{IsAuthenticated: false})
 
 		// when
 		response, err := server.SendGeneralRequest(t, request)
@@ -163,7 +162,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 		request.Header.Del("x-bsv-auth-version")
 
@@ -180,7 +179,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 		request.Header.Del("x-bsv-auth-identity-key")
 
@@ -197,7 +196,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 		request.Header.Del("x-bsv-auth-nonce")
 
@@ -214,7 +213,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 		request.Header.Del("x-bsv-auth-your-nonce")
 
@@ -231,7 +230,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request)
 		require.NoError(t, err)
 		request.Header.Del("x-bsv-auth-signature")
 
@@ -248,7 +247,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request, mocks.WithWrongSignature)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request, mocks.WithWrongSignature)
 		require.NoError(t, err)
 
 		// when
@@ -264,7 +263,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request, mocks.WithWrongNonce)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request, mocks.WithWrongNonce)
 		require.NoError(t, err)
 
 		// when
@@ -280,7 +279,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request, mocks.WithWrongYourNonce)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request, mocks.WithWrongYourNonce)
 		require.NoError(t, err)
 
 		// when
@@ -296,7 +295,7 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 		// given
 		request, err := http.NewRequest(http.MethodGet, pingPath, nil)
 		require.NoError(t, err)
-		err = mocks.PrepareGeneralRequestHeaders(clientWallet, authMessage, request, mocks.WithWrongVersion)
+		err = mocks.PrepareGeneralRequestHeaders(t.Context(), clientWallet, authMessage, request, mocks.WithWrongVersion)
 		require.NoError(t, err)
 
 		// when
@@ -312,12 +311,12 @@ func TestAuthMiddleware_GeneralRequest_HeaderValidation(t *testing.T) {
 func prepareInitialRequest(
 	t *testing.T,
 	serverWallet *mocks.MockableWallet,
-	clientWallet wallet.WalletInterface,
-	server *mocks.MockHTTPServer) *transport.AuthMessage {
+	clientWallet interfaces.Wallet,
+	server *mocks.MockHTTPServer) *auth.AuthMessage {
 
 	// given
-	initialRequest := mocks.PrepareInitialRequestBody(clientWallet)
-	serverWallet.OnCreateNonceOnce(walletFixtures.DefaultNonces[0], nil)
+	initialRequest := mocks.PrepareInitialRequestBody(t.Context(), clientWallet)
+	serverWallet.OnCreateNonceOnce(mocks.DefaultNonces[0], nil)
 	serverWallet.OnCreateSignatureOnce(prepareExampleSignature(t), nil)
 	serverWallet.OnGetPublicKeyOnce(prepareExampleIdentityKey(t), nil)
 

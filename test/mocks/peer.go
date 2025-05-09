@@ -3,9 +3,9 @@ package mocks
 import (
 	"errors"
 
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/sessionmanager"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/transport"
+	"github.com/bsv-blockchain/go-sdk/auth"
+	"github.com/bsv-blockchain/go-sdk/auth/certificates"
+	sdkUtils "github.com/bsv-blockchain/go-sdk/auth/utils"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -29,7 +29,7 @@ func (m *MockablePeer) ToPeer(message []byte, identityKey string, maxWaitTime in
 }
 
 // RequestCertificates mocks requesting certificates from a peer
-func (m *MockablePeer) RequestCertificates(certificatesToRequest transport.RequestedCertificateSet, identityKey string, maxWaitTime int) error {
+func (m *MockablePeer) RequestCertificates(certificatesToRequest sdkUtils.RequestedCertificateSet, identityKey string, maxWaitTime int) error {
 	if !isExpectedMockCall(m.ExpectedCalls, "RequestCertificates", certificatesToRequest, identityKey, maxWaitTime) {
 		return errors.New("unexpected call to RequestCertificates")
 	}
@@ -38,7 +38,7 @@ func (m *MockablePeer) RequestCertificates(certificatesToRequest transport.Reque
 }
 
 // GetAuthenticatedSession mocks retrieving an authenticated session
-func (m *MockablePeer) GetAuthenticatedSession(identityKey string, maxWaitTime int) (*sessionmanager.PeerSession, error) {
+func (m *MockablePeer) GetAuthenticatedSession(identityKey string, maxWaitTime int) (*auth.PeerSession, error) {
 	if !isExpectedMockCall(m.ExpectedCalls, "GetAuthenticatedSession", identityKey, maxWaitTime) {
 		return nil, errors.New("unexpected call to GetAuthenticatedSession")
 	}
@@ -47,11 +47,11 @@ func (m *MockablePeer) GetAuthenticatedSession(identityKey string, maxWaitTime i
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*sessionmanager.PeerSession), args.Error(1)
+	return args.Get(0).(*auth.PeerSession), args.Error(1)
 }
 
 // SendCertificateResponse mocks sending certificates to a peer
-func (m *MockablePeer) SendCertificateResponse(verifierIdentityKey string, certificates []wallet.VerifiableCertificate) error {
+func (m *MockablePeer) SendCertificateResponse(verifierIdentityKey string, certificates []certificates.VerifiableCertificate) error {
 	if !isExpectedMockCall(m.ExpectedCalls, "SendCertificateResponse", verifierIdentityKey, certificates) {
 		return errors.New("unexpected call to SendCertificateResponse")
 	}
@@ -77,7 +77,7 @@ func (m *MockablePeer) StopListeningForGeneralMessages(callbackID int) {
 }
 
 // ListenForCertificatesReceived mocks registering a callback for certificates
-func (m *MockablePeer) ListenForCertificatesReceived(callback func(senderPublicKey string, certs []wallet.VerifiableCertificate)) int {
+func (m *MockablePeer) ListenForCertificatesReceived(callback func(senderPublicKey string, certs []certificates.VerifiableCertificate)) int {
 	if !isExpectedMockCall(m.ExpectedCalls, "ListenForCertificatesReceived", mock.Anything) {
 		return -1
 	}
@@ -94,7 +94,7 @@ func (m *MockablePeer) StopListeningForCertificatesReceived(callbackID int) {
 }
 
 // ListenForCertificatesRequested mocks registering a callback for certificate requests
-func (m *MockablePeer) ListenForCertificatesRequested(callback func(senderPublicKey string, requestedCertificates transport.RequestedCertificateSet)) int {
+func (m *MockablePeer) ListenForCertificatesRequested(callback func(senderPublicKey string, requestedCertificates sdkUtils.RequestedCertificateSet)) int {
 	if !isExpectedMockCall(m.ExpectedCalls, "ListenForCertificatesRequested", mock.Anything) {
 		return -1
 	}
@@ -116,17 +116,17 @@ func (m *MockablePeer) OnToPeerOnce(message []byte, identityKey string, maxWaitT
 }
 
 // OnRequestCertificatesOnce sets up a one-time expectation for RequestCertificates
-func (m *MockablePeer) OnRequestCertificatesOnce(certificatesToRequest transport.RequestedCertificateSet, identityKey string, maxWaitTime int, err error) *mock.Call {
+func (m *MockablePeer) OnRequestCertificatesOnce(certificatesToRequest sdkUtils.RequestedCertificateSet, identityKey string, maxWaitTime int, err error) *mock.Call {
 	return m.On("RequestCertificates", certificatesToRequest, identityKey, maxWaitTime).Return(err).Once()
 }
 
 // OnGetAuthenticatedSessionOnce sets up a one-time expectation for GetAuthenticatedSession
-func (m *MockablePeer) OnGetAuthenticatedSessionOnce(identityKey string, maxWaitTime int, session *sessionmanager.PeerSession, err error) *mock.Call {
+func (m *MockablePeer) OnGetAuthenticatedSessionOnce(identityKey string, maxWaitTime int, session *auth.PeerSession, err error) *mock.Call {
 	return m.On("GetAuthenticatedSession", identityKey, maxWaitTime).Return(session, err).Once()
 }
 
 // OnSendCertificateResponseOnce sets up a one-time expectation for SendCertificateResponse
-func (m *MockablePeer) OnSendCertificateResponseOnce(verifierIdentityKey string, certificates []wallet.VerifiableCertificate, err error) *mock.Call {
+func (m *MockablePeer) OnSendCertificateResponseOnce(verifierIdentityKey string, certificates []certificates.VerifiableCertificate, err error) *mock.Call {
 	return m.On("SendCertificateResponse", verifierIdentityKey, certificates).Return(err).Once()
 }
 
@@ -166,11 +166,11 @@ func (m *MockablePeer) SimulateIncomingGeneralMessage(senderPublicKey string, pa
 }
 
 // SimulateIncomingCertificates provides a helper to simulate callbacks for testing
-func (m *MockablePeer) SimulateIncomingCertificates(senderPublicKey string, certificates []wallet.VerifiableCertificate, callback func(string, []wallet.VerifiableCertificate)) {
+func (m *MockablePeer) SimulateIncomingCertificates(senderPublicKey string, certificates []certificates.VerifiableCertificate, callback func(string, []certificates.VerifiableCertificate)) {
 	callback(senderPublicKey, certificates)
 }
 
 // SimulateIncomingCertificateRequest provides a helper to simulate callbacks for testing
-func (m *MockablePeer) SimulateIncomingCertificateRequest(senderPublicKey string, request transport.RequestedCertificateSet, callback func(string, transport.RequestedCertificateSet)) {
+func (m *MockablePeer) SimulateIncomingCertificateRequest(senderPublicKey string, request sdkUtils.RequestedCertificateSet, callback func(string, sdkUtils.RequestedCertificateSet)) {
 	callback(senderPublicKey, request)
 }

@@ -1,4 +1,4 @@
-package wallet
+package mocks
 
 // Constants for expected return values
 const (

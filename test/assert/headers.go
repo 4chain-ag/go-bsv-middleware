@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	walletFixtures "github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet/test"
+	"github.com/bsv-blockchain/go-bsv-middleware/test/mocks"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,8 +12,8 @@ var (
 	initialResponseHeaders = map[string]string{
 		"x-bsv-auth-version":      "0.1",
 		"x-bsv-auth-message-type": "initialResponse",
-		"x-bsv-auth-identity-key": walletFixtures.ServerIdentityKey,
-		"x-bsv-auth-your-nonce":   walletFixtures.ClientNonces[0],
+		"x-bsv-auth-identity-key": mocks.ServerIdentityKey,
+		"x-bsv-auth-your-nonce":   mocks.ClientNonces[0],
 	}
 )
 
@@ -39,8 +39,8 @@ func getGeneralResponseHeaders(i int) map[string]string {
 	return map[string]string{
 		"x-bsv-auth-version":      "0.1",
 		"x-bsv-auth-message-type": "general",
-		"x-bsv-auth-identity-key": walletFixtures.ServerIdentityKey,
-		"x-bsv-auth-your-nonce":   walletFixtures.ClientNonces[0],
-		"x-bsv-auth-nonce":        walletFixtures.DefaultNonces[1+i*2],
+		"x-bsv-auth-identity-key": mocks.ServerIdentityKey,
+		"x-bsv-auth-your-nonce":   mocks.ClientNonces[0],
+		"x-bsv-auth-nonce":        mocks.DefaultNonces[1+i*2],
 	}
 }

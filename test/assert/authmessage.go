@@ -4,29 +4,31 @@ import (
 	"encoding/hex"
 	"testing"
 
-	walletFixtures "github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet/test"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/transport"
+	"github.com/bsv-blockchain/go-bsv-middleware/test/mocks"
+	"github.com/bsv-blockchain/go-sdk/auth"
+	primitives "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/stretchr/testify/require"
 )
 
 var (
+	serverPublicKey, _         = primitives.PublicKeyFromString(mocks.ServerIdentityKey)
 	initialResponseSignature   = []byte("3044022001b11522b8effc5ee836914d3d4bdb87e95164246fb7515ef355a3fa96c558f20220537130fb596f55476d308cd18ef9b2238b04aa828d7393082288b5872f7f1c90")
-	initialResponseAuthMessage = transport.AuthMessage{
+	initialResponseAuthMessage = auth.AuthMessage{
 		Version:      "0.1",
 		MessageType:  "initialResponse",
-		IdentityKey:  walletFixtures.ServerIdentityKey,
-		InitialNonce: walletFixtures.DefaultNonces[0],
-		YourNonce:    &walletFixtures.ClientNonces[0],
-		Signature:    &initialResponseSignature,
+		IdentityKey:  serverPublicKey,
+		InitialNonce: mocks.DefaultNonces[0],
+		YourNonce:    mocks.ClientNonces[0],
+		Signature:    initialResponseSignature,
 	}
 )
 
 // InitialResponseAuthMessage asserts that the given AuthMessage is equal to the expected initial response AuthMessage.
-func InitialResponseAuthMessage(t *testing.T, msg *transport.AuthMessage) {
+func InitialResponseAuthMessage(t *testing.T, msg *auth.AuthMessage) {
 	compareAuthMessage(t, &initialResponseAuthMessage, msg)
 }
 
-func compareAuthMessage(t *testing.T, expected, actual *transport.AuthMessage) {
+func compareAuthMessage(t *testing.T, expected, actual *auth.AuthMessage) {
 	require.Equal(t, expected.Version, actual.Version)
 	require.Equal(t, expected.MessageType, actual.MessageType)
 	require.Equal(t, expected.IdentityKey, actual.IdentityKey)
@@ -39,13 +41,13 @@ func compareAuthMessage(t *testing.T, expected, actual *transport.AuthMessage) {
 	comparePointers(t, expected.Certificates, actual.Certificates)
 
 	if expected.Signature != nil {
-		hexStr := string(*expected.Signature)
+		hexStr := string(expected.Signature)
 
 		s, err := hex.DecodeString(hexStr)
 		require.NoError(t, err)
 
 		encoded := []byte(hex.EncodeToString(s))
-		require.Equal(t, *expected.Signature, encoded)
+		require.Equal(t, expected.Signature, encoded)
 	}
 }
 
