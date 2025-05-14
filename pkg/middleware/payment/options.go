@@ -3,7 +3,7 @@ package payment
 import (
 	"net/http"
 
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
+	"github.com/bsv-blockchain/go-bsv-middleware/pkg/interfaces"
 )
 
 const (
@@ -13,7 +13,7 @@ const (
 // Options configures the payment middleware
 type Options struct {
 	// Wallet is used for payment processing operations
-	Wallet wallet.PaymentInterface
+	Wallet interfaces.Payment
 
 	// CalculateRequestPrice determines the cost in satoshis for a request
 	CalculateRequestPrice func(r *http.Request) (int, error)
