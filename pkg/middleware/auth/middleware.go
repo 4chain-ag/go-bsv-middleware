@@ -68,6 +68,7 @@ func New(cfg Config) (*Middleware, error) {
 		CertificatesToRequest: cfg.CertificatesToRequest,
 	}
 	peer := auth.NewPeer(peerCfg)
+	peer.ListenForCertificatesReceived(cfg.OnCertificatesReceived)
 
 	return &Middleware{
 		peer:                 peer,

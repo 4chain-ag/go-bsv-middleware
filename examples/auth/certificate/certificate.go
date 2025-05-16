@@ -17,7 +17,6 @@ import (
 	exampleWallet "github.com/bsv-blockchain/go-bsv-middleware-examples/example-wallet"
 	middleware "github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware/auth"
 
-
 	"github.com/bsv-blockchain/go-sdk/auth/certificates"
 	sdkUtils "github.com/bsv-blockchain/go-sdk/auth/utils"
 	"github.com/bsv-blockchain/go-sdk/wallet"
@@ -61,6 +60,8 @@ func main() {
 			"age-verification": {"age"},
 		},
 	}
+
+	var onCertificatesReceived auth.OnCertificateReceivedCallback = onCertificatesReceivedFunc
 
 	opts := middleware.Config{
 		AllowUnauthenticated:   false,
@@ -374,37 +375,32 @@ func sendCertificateRequest(ctx context.Context, clientWallet wallet.Interface, 
 	return resp, nil
 }
 
-func onCertificatesReceived(
-	senderPublicKey string,
-	certs []*certificates.VerifiableCertificate,
-	req *http.Request,
-	res http.ResponseWriter,
-	next func()) {
+func onCertificatesReceivedFunc(
+	senderPublicKey *ec.PublicKey,
+	certs []*certificates.VerifiableCertificate) error {
 	if certs == nil || len(certs) == 0 {
 		slog.Error("No certificates provided")
-		res.WriteHeader(http.StatusForbidden)
-		res.Write([]byte("No age verification certificate provided"))
-		return
+		return fmt.Errorf("no age verification certificate provided")
 	}
 
 	validAge := false
 	for i, cert := range certs {
 		slog.Info("Certificate received", slog.Int("index", i), slog.Any("certificate", cert))
 		subject, err := ec.PrivateKeyFromHex(clientPrivateKeyHex)
-		if cert.Certificate.Subject != *subject.PubKey() {
+		if cert.Certificate.Subject.ToDERHex() != subject.PubKey().ToDERHex() {
 			slog.Error("Certificate subject mismatch",
 				slog.String("subject", cert.Certificate.Subject.ToDERHex()),
-				slog.String("senderPublicKey", senderPublicKey))
+				slog.String("senderPublicKey", senderPublicKey.ToDERHex()))
 			continue
 		}
 
 		certifier, err := ec.PrivateKeyFromHex(serverPrivateKeyHex)
-		if cert.Certificate.Certifier != *certifier.PubKey() {
+		if cert.Certificate.Certifier.ToDERHex() != certifier.PubKey().ToDERHex() {
 			slog.Error("Certificate not from trusted certifier")
 			continue
 		}
 
-		if cert.Certificate.Type != "age-verification" {
+		if cert.Certificate.Type != "YWdlLXZlcmlmaWNhdGlvbg==" { //"age-verification" {
 			slog.Error("Unexpected certificate type")
 			continue
 		}
@@ -415,7 +411,9 @@ func onCertificatesReceived(
 			continue
 		}
 
-		age, err := strconv.Atoi(fmt.Sprintf("%v", ageVal))
+		ageArrByte, err := base64.StdEncoding.DecodeString(fmt.Sprintf("%v", ageVal))
+
+		age, err := strconv.Atoi(string(ageArrByte))
 		if err != nil {
 			slog.Error("Invalid age format", slog.Any("ageField", ageVal))
 			continue
@@ -433,13 +431,9 @@ func onCertificatesReceived(
 
 	if !validAge {
 		slog.Error("Age verification failed")
-		res.WriteHeader(http.StatusForbidden)
-		res.Write([]byte("Age verification failed. Must be 18 or older."))
-		return
+		return fmt.Errorf("age verification failed: must be 18 or older")
 	}
 
 	slog.Info("Age verification successful")
-	if next != nil {
-		next()
-	}
+	return nil
 }

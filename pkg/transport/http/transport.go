@@ -18,7 +18,6 @@ import (
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/interfaces"
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/internal/logging"
 	"github.com/bsv-blockchain/go-sdk/auth"
-	"github.com/bsv-blockchain/go-sdk/auth/certificates"
 	"github.com/bsv-blockchain/go-sdk/auth/utils"
 	primitives "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
@@ -85,7 +84,7 @@ type TransportConfig struct {
 	SessionManager         auth.SessionManager
 	Logger                 *slog.Logger
 	CertificatesToRequest  *utils.RequestedCertificateSet
-	OnCertificatesReceived func(string, []*certificates.VerifiableCertificate, *http.Request, http.ResponseWriter, func())
+	OnCertificatesReceived auth.OnCertificateReceivedCallback
 }
 
 // Transport implements the auth.Transport interface for HTTP transport
@@ -95,7 +94,7 @@ type Transport struct {
 	logger                 *slog.Logger
 	messageCallback        func(context.Context, *auth.AuthMessage) error
 	certificatesToRequest  *utils.RequestedCertificateSet
-	onCertificatesReceived func(string, []*certificates.VerifiableCertificate, *http.Request, http.ResponseWriter, func())
+	onCertificatesReceived auth.OnCertificateReceivedCallback
 }
 
 // New creates a new HTTP transport instance with the provided configuration

@@ -1,13 +1,18 @@
 package mocks
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/interfaces"
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/utils"
 	"github.com/bsv-blockchain/go-sdk/auth"
+	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // Headers is a map of headers
@@ -130,4 +135,130 @@ func PrepareGeneralRequestHeaders(
 	}
 
 	return nil
+}
+
+// PrepareGeneralRequestHeadersWithSetNonces prepares the general request headers
+func PrepareGeneralRequestHeadersWithSetNonces(
+	ctx context.Context,
+	mockedWallet interfaces.Wallet,
+	previousResponse *auth.AuthMessage,
+	request *http.Request,
+	nonce string,
+	yourNonce string,
+	opts ...func(m map[string]string)) error {
+	if previousResponse == nil {
+		return errors.New("previous response is nil")
+	}
+
+	if previousResponse.IdentityKey == nil {
+		return errors.New("previous response missing identity key")
+	}
+
+	if yourNonce == "" && previousResponse.Nonce != "" {
+		yourNonce = previousResponse.Nonce
+	}
+
+	if yourNonce == "" {
+		return errors.New("previous response has no nonce to use")
+	}
+
+	normalizedResponse := &auth.AuthMessage{
+		Version:      previousResponse.Version,
+		MessageType:  previousResponse.MessageType,
+		IdentityKey:  previousResponse.IdentityKey,
+		InitialNonce: yourNonce,
+		Nonce:        nonce,
+	}
+
+	headers, err := prepareGeneralRequestHeadersFixesNonce(ctx, mockedWallet, normalizedResponse, utils.RequestData{Request: request})
+	if err != nil {
+		return errors.New("failed to prepare general request headers: " + err.Error())
+	}
+
+	for _, opt := range opts {
+		opt(headers)
+	}
+
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+
+	return nil
+}
+
+// prepareGeneralRequestHeaders prepares the general request headers
+func prepareGeneralRequestHeadersFixesNonce(ctx context.Context, walletInstance interfaces.Wallet, previousResponse *auth.AuthMessage, requestData utils.RequestData) (map[string]string, error) {
+	serverIdentityKey := previousResponse.IdentityKey
+	serverNonce := previousResponse.InitialNonce
+
+	opts := wallet.GetPublicKeyArgs{IdentityKey: true}
+	clientIdentityKey, err := walletInstance.GetPublicKey(ctx, opts, "")
+	if err != nil {
+		return nil, errors.New("failed to get client identity key")
+	}
+
+	requestID := []byte(DefaultNonces[0])
+	encodedRequestID := base64.StdEncoding.EncodeToString(requestID)
+
+	newNonce := DefaultNonces[0]
+	var writer bytes.Buffer
+
+	_, err = writer.Write(requestID)
+	if err != nil {
+		return nil, errors.New("failed to write request ID")
+	}
+
+	request := getOrPrepareTempRequest(requestData)
+	err = utils.WriteRequestData(request, &writer)
+	if err != nil {
+		return nil, err
+	}
+
+	protocol := wallet.Protocol{SecurityLevel: wallet.SecurityLevelEveryAppAndCounterparty, Protocol: auth.AUTH_PROTOCOL_ID}
+
+	baseArgs := wallet.EncryptionArgs{
+		ProtocolID: protocol,
+		Counterparty: wallet.Counterparty{
+			Type:         wallet.CounterpartyTypeOther,
+			Counterparty: serverIdentityKey,
+		},
+		KeyID: fmt.Sprintf("%s %s", newNonce, serverNonce),
+	}
+	createSignatureArgs := wallet.CreateSignatureArgs{
+		EncryptionArgs: baseArgs,
+		Data:           writer.Bytes(),
+	}
+
+	signature, err := walletInstance.CreateSignature(ctx, createSignatureArgs, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create signature, %w", err)
+	}
+
+	headers := map[string]string{
+		"x-bsv-auth-version":      "0.1",
+		"x-bsv-auth-identity-key": clientIdentityKey.PublicKey.ToDERHex(),
+		"x-bsv-auth-nonce":        newNonce,
+		"x-bsv-auth-your-nonce":   serverNonce,
+		"x-bsv-auth-signature":    hex.EncodeToString(signature.Signature.Serialize()),
+		"x-bsv-auth-request-id":   encodedRequestID,
+	}
+
+	return headers, nil
+}
+
+func getOrPrepareTempRequest(requestData utils.RequestData) *http.Request {
+	if requestData.Request != nil {
+		return requestData.Request
+	}
+
+	req, err := http.NewRequest(requestData.Method, requestData.URL, bytes.NewBuffer(requestData.Body))
+	if err != nil {
+		panic(err)
+	}
+
+	for key, value := range requestData.Headers {
+		req.Header.Set(key, value)
+	}
+
+	return req
 }

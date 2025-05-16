@@ -15,6 +15,12 @@ func ResponseOK(t *testing.T, res *http.Response) {
 	require.Equal(t, http.StatusOK, res.StatusCode)
 }
 
+// BadRequest checks if the response status code is 400.
+func BadRequest(t *testing.T, res *http.Response) {
+	require.NotNil(t, res)
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+}
+
 // NotAuthorized checks if the response status code is 401.
 func NotAuthorized(t *testing.T, res *http.Response) {
 	require.NotNil(t, res)

@@ -69,7 +69,7 @@ func (m *MockableSessionManager) GetSession(identifier string) (*auth.PeerSessio
 	if isExpectedMockCall(m.ExpectedCalls, "GetSession", identifier) {
 		args := m.Called(identifier)
 		if s, ok := args.Get(0).(*auth.PeerSession); ok {
-			return s, args.Error(1)
+			return s, nil
 		}
 		return nil, args.Error(1)
 	}

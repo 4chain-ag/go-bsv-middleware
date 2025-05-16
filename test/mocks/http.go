@@ -30,7 +30,7 @@ type MockHTTPServer struct {
 	logger                  *slog.Logger
 	authMiddleware          *middleware.Middleware
 	certificateRequirements *sdkUtils.RequestedCertificateSet
-	onCertificatesReceived  func(string, []*certificates.VerifiableCertificate, *http.Request, http.ResponseWriter, func())
+	onCertificatesReceived  auth.OnCertificateReceivedCallback
 }
 
 // MockHTTPHandler is a mock HTTP handler used in tests
@@ -130,6 +130,61 @@ func (s *MockHTTPServer) SendCertificateResponse(t *testing.T, clientWallet inte
 		IdentityKey:  identityKey.PublicKey,
 		Nonce:        nonce,
 		YourNonce:    authMessage.InitialNonce,
+		Certificates: certificates,
+	}
+
+	certBytes, err := json.Marshal(certificates)
+	require.NoError(t, err)
+
+	signatureArgs := wallet.CreateSignatureArgs{
+		EncryptionArgs: wallet.EncryptionArgs{
+			ProtocolID: transport.DefaultAuthProtocol,
+			KeyID:      fmt.Sprintf("%s %s", nonce, authMessage.InitialNonce),
+			Counterparty: wallet.Counterparty{
+				Type:         wallet.CounterpartyTypeOther,
+				Counterparty: authMessage.IdentityKey,
+			},
+		},
+		Data: certBytes,
+	}
+
+	signatureResult, err := clientWallet.CreateSignature(t.Context(), signatureArgs, "")
+	require.NoError(t, err)
+
+	signBytes := signatureResult.Signature.Serialize()
+	certMessage.Signature = signBytes
+
+	jsonData, err := json.Marshal(certMessage)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest("POST", s.URL()+"/.well-known/auth", bytes.NewBuffer(jsonData))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+
+	return resp, nil
+}
+
+func (s *MockHTTPServer) SendCertificateResponseWithSetNonces(t *testing.T, clientWallet interfaces.Wallet, certificates []*certificates.VerifiableCertificate, nonce, yourNonce string) (*http.Response, error) {
+	initialRequest := PrepareInitialRequestBody(t.Context(), clientWallet)
+	response, err := s.SendNonGeneralRequest(t, initialRequest.AuthMessage())
+	require.NoError(t, err)
+
+	authMessage, err := MapBodyToAuthMessage(t, response)
+	require.NoError(t, err)
+
+	identityKey, err := clientWallet.GetPublicKey(t.Context(), wallet.GetPublicKeyArgs{IdentityKey: true}, "")
+	require.NoError(t, err)
+
+	certMessage := auth.AuthMessage{
+		Version:      "0.1",
+		MessageType:  auth.MessageTypeCertificateResponse,
+		IdentityKey:  identityKey.PublicKey,
+		Nonce:        nonce,
+		YourNonce:    yourNonce,
 		Certificates: certificates,
 	}
 
@@ -271,7 +326,7 @@ func MapBodyToAuthMessage(t *testing.T, response *http.Response) (*auth.AuthMess
 // WithCertificateRequirements is a MockHTTPServer optional setting that adds certificate requirements
 func WithCertificateRequirements(
 	reqs *sdkUtils.RequestedCertificateSet,
-	onReceived func(string, []*certificates.VerifiableCertificate, *http.Request, http.ResponseWriter, func())) func(s *MockHTTPServer) *MockHTTPServer {
+	onReceived auth.OnCertificateReceivedCallback) func(s *MockHTTPServer) *MockHTTPServer {
 	return func(s *MockHTTPServer) *MockHTTPServer {
 		s.certificateRequirements = reqs
 		s.onCertificatesReceived = onReceived
