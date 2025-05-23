@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -12,136 +15,75 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware/auth"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
-	walletFixtures "github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet/test"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/transport"
+	exampleWallet "github.com/bsv-blockchain/go-bsv-middleware-examples/example-wallet"
+	middleware "github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware/auth"
+
+	"github.com/bsv-blockchain/go-sdk/auth/certificates"
+	sdkUtils "github.com/bsv-blockchain/go-sdk/auth/utils"
+	"github.com/bsv-blockchain/go-sdk/wallet"
+
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/utils"
-	"github.com/bsv-blockchain/go-bsv-middleware/test/mocks"
+	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+
 	"github.com/go-resty/resty/v2"
 )
 
-const serverAddress = "http://localhost:8080"
-const trustedCertifier = "02certifieridentitykey00000000000000000000000000000000000000000000000"
+const (
+	serverPrivateKeyHex = "5a4d867377bd44eba1cecd0806c16f24e293f7e218c162b1177571edaeeaecef"
+	clientPrivateKeyHex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+	serverPort          = ":8080"
+	trustedCertifier    = "02certifieridentitykey00000000000000000000000000000000000000000000000"
+)
 
 func main() {
-	// ========== Server Setup ==========
-	fmt.Println("============================================================")
-	fmt.Println("🔒 AGE VERIFICATION DEMO - SECURE AUTHENTICATION FLOW")
-	fmt.Println("============================================================")
-
+	log.Println("BSV Auth middleware - Demo")
 	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
 	logger := slog.New(logHandler)
 
-	sPrivKey, err := ec.PrivateKeyFromHex(walletFixtures.ServerPrivateKeyHex)
+	sPrivKey, err := ec.PrivateKeyFromHex(serverPrivateKeyHex)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to parse server private key: %v", err)
 	}
 
-	serverMockedWallet := wallet.NewMockWallet(sPrivKey, walletFixtures.DefaultNonces...)
+	serverWallet, err := exampleWallet.NewExtendedProtoWallet(sPrivKey)
+	if err != nil {
+		log.Fatalf("Failed to create server wallet: %v", err)
+	}
+	log.Println("✓ Server wallet created")
 
-	// Define the certificate types and certifier expected
-	certificateToRequest := transport.RequestedCertificateSet{
+	certificateToRequest := &sdkUtils.RequestedCertificateSet{
 		Certifiers: []string{trustedCertifier},
-		Types: map[string][]string{
+		CertificateTypes: map[string][]string{
 			"age-verification": {"age"},
 		},
 	}
 
-	// Middleware callback for processing received certificates
-	onCertificatesReceived := func(
-		senderPublicKey string,
-		certs *[]wallet.VerifiableCertificate,
-		req *http.Request,
-		res http.ResponseWriter,
-		next func()) {
+	var onCertificatesReceived auth.OnCertificateReceivedCallback = onCertificatesReceivedFunc
 
-		if certs == nil || len(*certs) == 0 {
-			logger.Error("No certificates provided")
-			res.WriteHeader(http.StatusForbidden)
-			res.Write([]byte("No age verification certificate provided"))
-			return
-		}
-
-		validAge := false
-
-		for i, cert := range *certs {
-			logger.Info("Certificate received", slog.Int("index", i), slog.Any("certificate", cert))
-
-			if cert.Certificate.Subject != senderPublicKey {
-				logger.Error("Certificate subject mismatch",
-					slog.String("subject", cert.Certificate.Subject),
-					slog.String("senderPublicKey", senderPublicKey))
-				continue
-			}
-
-			if cert.Certificate.Certifier != trustedCertifier {
-				logger.Error("Certificate not from trusted certifier")
-				continue
-			}
-
-			if cert.Certificate.Type != "age-verification" {
-				logger.Error("Unexpected certificate type")
-				continue
-			}
-
-			ageVal, ok := cert.Certificate.Fields["age"]
-			if !ok {
-				logger.Error("No age field found")
-				continue
-			}
-
-			age, err := strconv.Atoi(fmt.Sprintf("%v", ageVal))
-			if err != nil {
-				logger.Error("Invalid age format", slog.Any("ageField", ageVal))
-				continue
-			}
-
-			if age < 18 {
-				logger.Error("Age below 18", slog.Int("age", age))
-				continue
-			}
-
-			logger.Info("Age verified", slog.Int("age", age))
-			validAge = true
-			break
-		}
-
-		if !validAge {
-			logger.Error("Age verification failed")
-			res.WriteHeader(http.StatusForbidden)
-			res.Write([]byte("Age verification failed. Must be 18 or older."))
-			return
-		}
-
-		logger.Info("Age verification successful")
-		if next != nil {
-			next()
-		}
-	}
-
-	opts := auth.Config{
+	opts := middleware.Config{
 		AllowUnauthenticated:   false,
 		Logger:                 logger,
-		Wallet:                 serverMockedWallet,
-		CertificatesToRequest:  &certificateToRequest,
+		Wallet:                 serverWallet,
 		OnCertificatesReceived: onCertificatesReceived,
+		CertificatesToRequest:  certificateToRequest,
 	}
-	middleware, err := auth.New(opts)
+	authMiddleware, err := middleware.New(opts)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to create auth middleware: %v", err)
 	}
-	fmt.Println("✅ Auth middleware created")
+
+	log.Println("✓ Auth middleware created")
 
 	mux := http.NewServeMux()
-	mux.Handle("/", middleware.Handler(http.HandlerFunc(pingHandler)))
-	mux.Handle("/ping", middleware.Handler(http.HandlerFunc(pingHandler)))
+	mux.Handle("/", authMiddleware.Handler(http.HandlerFunc(pingHandler)))
+	mux.Handle("/ping", authMiddleware.Handler(http.HandlerFunc(pingHandler)))
 
 	srv := &http.Server{
-		Addr:    ":8080",
+		Addr:    serverPort,
 		Handler: mux,
 	}
+
 	go func() {
 		logger.Info("Server started", slog.String("addr", srv.Addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -150,233 +92,393 @@ func main() {
 	}()
 
 	time.Sleep(1 * time.Second)
-	fmt.Println("\n✅ Server initialized successfully on http://localhost:8080")
-	fmt.Println("   Protected endpoints: / and /ping")
-	fmt.Println("   Required: Age verification certificate (18+)")
+	log.Println("✓ HTTP Server started")
 
-	// ========== Client Simulation ==========
-	fmt.Println("\n============================================================")
-	fmt.Println("🧪 SIMULATING CLIENT AUTHENTICATION FLOW")
-	fmt.Println("============================================================")
-
-	cPrivKey, err := ec.PrivateKeyFromHex(walletFixtures.ClientPrivateKeyHex)
+	cPrivKey, err := ec.PrivateKeyFromHex(clientPrivateKeyHex)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to parse client private key: %v", err)
 	}
 
-	mockedWallet := wallet.NewMockWallet(cPrivKey, walletFixtures.DefaultNonces...)
-
-	fmt.Println("\n📡 STEP 1: Client initiates authentication handshake")
-	responseData := callInitialRequest(mockedWallet)
-	fmt.Printf("   ↪ Server responded with identity key: %s...\n", responseData.IdentityKey[:16])
-
-	fmt.Println("\n📡 STEP 2: Testing access to protected resource WITHOUT certificate")
-	resp := callPingEndpoint(mockedWallet, responseData)
-	expectedErrorCode := http.StatusUnauthorized
-	if resp.StatusCode() != expectedErrorCode {
-		fmt.Printf("   ❌ ERROR: Expected status %d, but received: %d\n", expectedErrorCode, resp.StatusCode())
-	} else {
-		fmt.Printf("   ✅ SUCCESS: Server correctly denied access with status %d (Unauthorized)\n", expectedErrorCode)
+	clientWallet, err := exampleWallet.NewExtendedProtoWallet(cPrivKey)
+	if err != nil {
+		log.Fatalf("Failed to create client wallet: %v", err)
 	}
 
-	fmt.Println("\n📡 STEP 3: Sending valid age verification certificate")
-	response2 := sendCertificate(mockedWallet, responseData.IdentityKey, responseData.InitialNonce)
-	if response2.StatusCode() != http.StatusOK {
-		fmt.Printf("   ❌ ERROR: Certificate submission failed with status: %d\n", response2.StatusCode())
-	} else {
-		fmt.Println("   ✅ SUCCESS: Server accepted the age verification certificate")
-	}
+	log.Println("✓ Client wallet created")
 
-	fmt.Println("\n📡 STEP 4: Testing access to protected resource WITH valid certificate")
-	resp = callPingEndpoint(mockedWallet, responseData)
-	if resp.StatusCode() != http.StatusOK {
-		fmt.Printf("   ❌ ERROR: Access denied with status: %d\n", resp.StatusCode())
-	} else {
-		fmt.Println("   ✅ SUCCESS: Server granted access to protected resource")
-		fmt.Println("   ↪ Received response: \"Pong!\"")
+	log.Println("\n📡 STEP 1: Sending non general request to /.well-known/auth endpoint")
+	responseData, err := callInitialRequest(clientWallet)
+	if err != nil {
+		log.Fatalf("Failed to call initial request: %v", err)
 	}
+	log.Println("✓ Auth completed")
 
-	fmt.Println("\n============================================================")
-	fmt.Println("🎉 DEMO COMPLETED SUCCESSFULLY")
-	fmt.Println("============================================================")
+	log.Println("\n📡 STEP 2: Sending general request to test authorization")
+	if err := callPingEndpoint(clientWallet, responseData); err != nil {
+		log.Fatalf("Failed to call ping endpoint: %v", err)
+	}
+	log.Println("✓ General request completed")
+
+	log.Println("\n📡 STEP 3: Sending certificates")
+	if err := sendCertificate(context.Background(), clientWallet, responseData); err != nil {
+		log.Fatalf("Failed to send certificate: %v", err)
+	}
+	log.Println("✓ Certificate request completed")
 }
 
-// ========== Handlers ==========
-
+// pingHandler handles ping requests and returns a simple "Pong!" response
 func pingHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Pong!"))
+	_, err := w.Write([]byte("Pong!"))
+	if err != nil {
+		log.Printf("Error writing ping response: %v", err)
+	}
 }
 
-// ========== Client Request Helpers ==========
-
-func callInitialRequest(mockedWallet wallet.WalletInterface) *transport.AuthMessage {
-	requestData := mocks.PrepareInitialRequestBody(mockedWallet)
-	url := "http://localhost:8080/.well-known/auth"
-	var result transport.AuthMessage
-	var errMsg any
+// callInitialRequest sends the initial authentication request to the /.well-known/auth endpoint
+func callInitialRequest(clientWallet wallet.Interface) (*auth.AuthMessage, error) {
+	initialRequest := utils.PrepareInitialRequestBody(context.Background(), clientWallet)
+	url := "http://localhost" + serverPort + "/.well-known/auth"
 
 	client := resty.New()
+	var result auth.AuthMessage
+
 	resp, err := client.R().
 		SetHeader("Content-Type", "application/json").
-		SetBody(requestData).
+		SetBody(initialRequest).
 		SetResult(&result).
-		SetError(&errMsg).
 		Post(url)
 
 	if err != nil {
-		log.Fatalf("Request failed: %v", err)
+		log.Printf("Request failed: %v", err)
+		return nil, err
 	}
 
 	if resp.IsError() {
-		log.Fatalf("Request failed: Status %d, Body: %s", resp.StatusCode(), resp.String())
-	}
-
-	fmt.Println("Response from server: ", resp.String())
-
-	fmt.Println("🔑 Response Headers:")
-	for key, value := range resp.Header() {
-		lowerKey := strings.ToLower(key)
-		if strings.Contains(lowerKey, "x-bsv-auth") {
-			fmt.Println(lowerKey, strings.Join(value, ", "))
-		}
-	}
-
-	return &result
-}
-
-func callPingEndpoint(mockedWallet wallet.WalletInterface, response *transport.AuthMessage) *resty.Response {
-	url := "http://localhost:8080/ping"
-
-	if response.InitialNonce == "" {
-		response.InitialNonce = *response.Nonce
-	}
-	if response.Nonce == nil {
-		response.Nonce = &response.InitialNonce
-	}
-
-	headers, err := mocks.PrepareGeneralRequestHeaders(mockedWallet, response, "/ping", "GET")
-	if err != nil {
-		panic(err)
-	}
-
-	var result transport.AuthMessage
-
-	client := resty.New()
-	resp, err := client.R().
-		SetHeaders(headers).
-		SetResult(&result).
-		Get(url)
-
-	if err != nil {
-		log.Fatalf("Request failed: %v", err)
+		errMsg := resp.String()
+		log.Printf("Server returned error (%d): %s", resp.StatusCode(), errMsg)
+		return nil, errors.New("server error occurred")
 	}
 
 	log.Printf("Response from server: %s", resp.String())
 
-	fmt.Println("🔑 Response Headers:")
+	log.Println("🔑 Response Headers:")
 	for key, value := range resp.Header() {
 		lowerKey := strings.ToLower(key)
 		if strings.Contains(lowerKey, "x-bsv-auth") {
-			fmt.Println(lowerKey, strings.Join(value, ", "))
+			log.Printf("%s: %s", lowerKey, strings.Join(value, ", "))
+		}
+	}
+
+	return &result, nil
+}
+
+// callPingEndpoint sends a general request to the /ping endpoint to test authorization
+func callPingEndpoint(clientWallet wallet.Interface, response *auth.AuthMessage) error {
+	url := "http://localhost" + serverPort + "/ping"
+
+	modifiedResponse := *response
+	modifiedResponse.InitialNonce = response.Nonce
+
+	requestData := utils.RequestData{
+		Method: http.MethodGet,
+		URL:    url,
+	}
+
+	headers, err := utils.PrepareGeneralRequestHeaders(context.Background(), clientWallet, &modifiedResponse, requestData)
+	if err != nil {
+		log.Printf("Failed to prepare general request headers: %v", err)
+		return err
+	}
+
+	log.Println("🔑 Request headers")
+	for key, value := range headers {
+		log.Printf("%s: %s", key, value)
+	}
+
+	client := resty.New()
+	resp, err := client.R().
+		SetHeaders(headers).
+		Get(url)
+
+	if err != nil {
+		log.Printf("Request failed: %v", err)
+		return err
+	}
+
+	log.Printf("Response from server: %s", resp.String())
+
+	log.Println("🔑 Response Headers:")
+	for key, value := range resp.Header() {
+		lowerKey := strings.ToLower(key)
+		if strings.Contains(lowerKey, "x-bsv-auth") {
+			log.Printf("%s: %s", lowerKey, strings.Join(value, ", "))
 		}
 	}
 
 	if resp.IsError() {
 		log.Printf("Warning: Received non-success status from /ping: %d", resp.StatusCode())
+		return fmt.Errorf("ping endpoint returned status %d", resp.StatusCode())
 	}
-	return resp
+
+	return nil
 }
 
-func sendCertificate(clientWallet wallet.WalletInterface, serverIdentityKey, previousNonce string) *resty.Response {
-	identityPubKey, err := clientWallet.GetPublicKey(&wallet.GetPublicKeyArgs{IdentityKey: true}, "")
+// sendCertificate creates and sends a certificate response to the server
+func sendCertificate(ctx context.Context, clientWallet wallet.Interface, response *auth.AuthMessage) error {
+	certificateResponse, err := createCertificateResponse(ctx, clientWallet, response)
 	if err != nil {
-		log.Fatalf("Failed to get identity key: %v", err)
+		log.Printf("Failed to create certificate response: %v", err)
+		return err
 	}
-	identityKey := identityPubKey.PublicKey.ToDERHex()
 
-	nonce, err := clientWallet.CreateNonce(context.Background())
+	resp, err := sendCertificateRequest(ctx, clientWallet, response, certificateResponse)
 	if err != nil {
-		log.Fatalf("Failed to create nonce: %v", err)
+		log.Printf("Failed to send certificate request: %v", err)
+		return err
 	}
 
-	certificates := []wallet.VerifiableCertificate{
-		{
-			Certificate: wallet.Certificate{
-				Type:         "age-verification",
-				SerialNumber: "12345",
-				Subject:      identityKey,
-				Certifier:    trustedCertifier,
-				Fields: map[string]any{
-					"age": "21",
-				},
-				Signature: "mocksignature",
-			},
-			Keyring: map[string]string{"age": "symmetricKeyToField"},
-		},
+	log.Printf("Response from server: %s", resp.String())
+	return nil
+}
+
+// createCertificateResponse creates a certificate response message with verifiable certificates
+func createCertificateResponse(ctx context.Context, clientWallet wallet.Interface, authResponse *auth.AuthMessage) (*auth.AuthMessage, error) {
+	newNonce, err := generateBase64Nonce(32)
+	if err != nil {
+		log.Printf("Failed to generate nonce: %v", err)
+		return nil, err
+	}
+	log.Printf("New Nonce (base64): %s", newNonce)
+
+	identityPubKey, err := clientWallet.GetPublicKey(ctx, wallet.GetPublicKeyArgs{IdentityKey: true}, "")
+	if err != nil {
+		log.Printf("Failed to get identity key: %v", err)
+		return nil, err
+	}
+	identityKey := identityPubKey.PublicKey
+
+	certs, err := createVerifiableCertificates(identityKey)
+	if err != nil {
+		log.Printf("Failed to create certificates: %v", err)
+		return nil, err
 	}
 
-	certMessage := transport.AuthMessage{
+	certBytes, err := json.Marshal(certs)
+	if err != nil {
+		log.Printf("Failed to marshal certificates: %v", err)
+		return nil, err
+	}
+
+	keyID := fmt.Sprintf("%s %s", newNonce, authResponse.Nonce)
+	signature, err := signCertificateResponse(ctx, clientWallet, keyID, authResponse.IdentityKey, certBytes)
+	if err != nil {
+		log.Printf("Failed to sign certificate response: %v", err)
+		return nil, err
+	}
+
+	return &auth.AuthMessage{
 		Version:      "0.1",
 		MessageType:  "certificateResponse",
 		IdentityKey:  identityKey,
-		Nonce:        &nonce,
-		YourNonce:    &previousNonce,
-		Certificates: &certificates,
-	}
+		Nonce:        newNonce,
+		YourNonce:    authResponse.Nonce,
+		Certificates: certs,
+		Signature:    signature,
+	}, nil
+}
 
-	certBytes, err := json.Marshal(certificates)
+// generateBase64Nonce generates a random base64-encoded nonce of the specified size
+func generateBase64Nonce(size int) (string, error) {
+	randomBytes := make([]byte, size)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(randomBytes), nil
+}
+
+// createVerifiableCertificates creates test verifiable certificates for age verification
+func createVerifiableCertificates(identityKey *ec.PublicKey) ([]*certificates.VerifiableCertificate, error) {
+	certifier, err := ec.PrivateKeyFromHex(serverPrivateKeyHex)
 	if err != nil {
-		log.Fatalf("Failed to marshal certificates: %v", err)
+		log.Printf("Failed to get certifier key: %v", err)
+		return nil, err
 	}
 
-	serverKey, err := ec.PublicKeyFromString(serverIdentityKey)
+	serialNumber, err := generateBase64Nonce(16)
 	if err != nil {
-		log.Fatalf("Failed to parse server key: %v", err)
+		log.Printf("Failed to generate serial number: %v", err)
+		return nil, err
 	}
 
-	signatureArgs := &wallet.CreateSignatureArgs{
-		EncryptionArgs: wallet.EncryptionArgs{
-			ProtocolID: wallet.DefaultAuthProtocol,
-			KeyID:      fmt.Sprintf("%s %s", nonce, previousNonce),
-			Counterparty: wallet.Counterparty{
-				Type:         wallet.CounterpartyTypeOther,
-				Counterparty: serverKey,
+	certificate := certificates.Certificate{
+		Type:         wallet.Base64String(encodeToBase64("age-verification")),
+		SerialNumber: wallet.Base64String(serialNumber),
+		Subject:      *identityKey,
+		Certifier:    *certifier.PubKey(),
+		Fields: map[wallet.CertificateFieldNameUnder50Bytes]wallet.Base64String{
+			"age": wallet.Base64String(encodeToBase64("21")),
+		},
+		// For testing purposes, we are not using a real signature
+		// We receive warning about the signature being invalid, but we are ignoring it here
+		// In a real scenario, this should be a valid signature from the certifier
+		Signature: []byte("mocksignature"),
+	}
+
+	return []*certificates.VerifiableCertificate{
+		{
+			Certificate: certificate,
+			Keyring: map[wallet.CertificateFieldNameUnder50Bytes]wallet.Base64String{
+				"age": wallet.Base64String(encodeToBase64("symmetricKeyToField")),
 			},
 		},
-		Data: certBytes,
-	}
+	}, nil
+}
 
-	signatureResult, err := clientWallet.CreateSignature(signatureArgs, "")
+// encodeToBase64 encodes a string to base64
+func encodeToBase64(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+// signCertificateResponse signs the certificate response data with the client wallet
+func signCertificateResponse(ctx context.Context, clientWallet wallet.Interface, keyID string, counterpartyKey *ec.PublicKey, data []byte) ([]byte, error) {
+	sigResult, err := clientWallet.CreateSignature(ctx, wallet.CreateSignatureArgs{
+		EncryptionArgs: wallet.EncryptionArgs{
+			ProtocolID: wallet.Protocol{
+				SecurityLevel: wallet.SecurityLevelEveryAppAndCounterparty,
+				Protocol:      auth.AUTH_PROTOCOL_ID,
+			},
+			KeyID: keyID,
+			Counterparty: wallet.Counterparty{
+				Type:         wallet.CounterpartyTypeOther,
+				Counterparty: counterpartyKey,
+			},
+		},
+		Data: data,
+	}, "")
+
 	if err != nil {
-		log.Fatalf("Failed to create signature: %v", err)
+		return nil, err
 	}
 
-	signatureBytes := signatureResult.Signature.Serialize()
-	certMessage.Signature = &signatureBytes
+	return sigResult.Signature.Serialize(), nil
+}
 
-	requestBody, err := json.Marshal(certMessage)
+// sendCertificateRequest sends the certificate response to the server
+func sendCertificateRequest(ctx context.Context, clientWallet wallet.Interface, authResponse *auth.AuthMessage, certificateResponse *auth.AuthMessage) (*resty.Response, error) {
+	url := "http://localhost" + serverPort + "/.well-known/auth"
+	modifiedResponse := *authResponse
+	modifiedResponse.InitialNonce = authResponse.Nonce
+
+	jsonBody, err := json.Marshal(certificateResponse)
 	if err != nil {
-		log.Fatalf("Failed to marshal certificate message: %v", err)
+		log.Printf("Failed to marshal certificate response: %v", err)
+		return nil, err
 	}
+
+	requestData := utils.RequestData{
+		Method: http.MethodPost,
+		URL:    url,
+		Body:   jsonBody,
+	}
+	headers, err := utils.PrepareCertificateResponseHeaders(ctx, clientWallet, &modifiedResponse, requestData)
+	if err != nil {
+		log.Printf("Failed to prepare headers: %v", err)
+		return nil, err
+	}
+
 	client := resty.New()
-	var result transport.AuthMessage
-	var errMsg any
-
 	resp, err := client.R().
+		SetHeaders(headers).
 		SetHeader("Content-Type", "application/json").
-		SetBody(requestBody).
-		SetResult(&result).
-		SetError(&errMsg).
-		Post("http://localhost:8080/.well-known/auth")
-
+		SetBody(jsonBody).
+		Post(url)
 	if err != nil {
-		log.Fatalf("Request failed: %v", err)
+		log.Printf("Request failed: %v", err)
+		return nil, err
 	}
 
 	if resp.IsError() {
-		log.Fatalf("Request failed: Status %d, Body: %s", resp.StatusCode(), resp.String())
+		log.Printf("Warning: Received non-success status: %d", resp.StatusCode())
 	}
 
-	fmt.Println("Response from server: ", resp.String())
-	return resp
+	return resp, nil
+}
+
+// onCertificatesReceivedFunc handles received certificates and validates age verification
+func onCertificatesReceivedFunc(
+	senderPublicKey *ec.PublicKey,
+	certs []*certificates.VerifiableCertificate) error {
+	if certs == nil || len(certs) == 0 {
+		log.Printf("No certificates provided")
+		return fmt.Errorf("no age verification certificate provided")
+	}
+
+	validAge := false
+	for i, cert := range certs {
+		log.Printf("Certificate received at index %d", i)
+
+		subject, err := ec.PrivateKeyFromHex(clientPrivateKeyHex)
+		if err != nil {
+			log.Printf("Failed to parse client private key: %v", err)
+			continue
+		}
+
+		if cert.Certificate.Subject.ToDERHex() != subject.PubKey().ToDERHex() {
+			log.Printf("Certificate subject mismatch: got %s, expected %s",
+				cert.Certificate.Subject.ToDERHex(), subject.PubKey().ToDERHex())
+			continue
+		}
+
+		certifier, err := ec.PrivateKeyFromHex(serverPrivateKeyHex)
+		if err != nil {
+			log.Printf("Failed to parse server private key: %v", err)
+			continue
+		}
+
+		if cert.Certificate.Certifier.ToDERHex() != certifier.PubKey().ToDERHex() {
+			log.Printf("Certificate not from trusted certifier")
+			continue
+		}
+
+		// base64 encoded "age-verification"
+		if cert.Certificate.Type != "YWdlLXZlcmlmaWNhdGlvbg==" {
+			log.Printf("Unexpected certificate type: %s", cert.Certificate.Type)
+			continue
+		}
+
+		ageVal, ok := cert.Certificate.Fields["age"]
+		if !ok {
+			log.Printf("No age field found")
+			continue
+		}
+
+		ageArrByte, err := base64.StdEncoding.DecodeString(fmt.Sprintf("%v", ageVal))
+		if err != nil {
+			log.Printf("Failed to decode age field: %v", err)
+			continue
+		}
+
+		age, err := strconv.Atoi(string(ageArrByte))
+		if err != nil {
+			log.Printf("Invalid age format: %v", ageVal)
+			continue
+		}
+
+		if age < 18 {
+			log.Printf("Age below 18: %d", age)
+			continue
+		}
+
+		log.Printf("Age verified: %d", age)
+		validAge = true
+		break
+	}
+
+	if !validAge {
+		log.Printf("Age verification failed")
+		return fmt.Errorf("age verification failed: must be 18 or older")
+	}
+
+	log.Printf("Age verification successful")
+	return nil
 }

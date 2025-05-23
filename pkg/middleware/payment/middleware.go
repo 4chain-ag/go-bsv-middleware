@@ -8,15 +8,17 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/bsv-blockchain/go-bsv-middleware/pkg/interfaces"
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/internal/logging"
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware/auth"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
+	sdkUtils "github.com/bsv-blockchain/go-sdk/auth/utils"
+	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // Middleware is the payment middleware handler that implements Direct Payment Protocol (DPP) for HTTP-based micropayments
 type Middleware struct {
 	logger                *slog.Logger
-	wallet                wallet.PaymentInterface
+	wallet                interfaces.Payment
 	calculateRequestPrice func(r *http.Request) (int, error)
 }
 
@@ -111,8 +113,8 @@ func extractPaymentData(r *http.Request) (*Payment, error) {
 	return &payment, nil
 }
 
-func requestPayment(w http.ResponseWriter, r *http.Request, walletInstance wallet.PaymentInterface, price int) {
-	derivationPrefix, err := walletInstance.CreateNonce(r.Context())
+func requestPayment(w http.ResponseWriter, r *http.Request, walletInstance interfaces.Payment, price int) {
+	derivationPrefix, err := sdkUtils.CreateNonce(r.Context(), walletInstance, wallet.Counterparty{Type: wallet.CounterpartyTypeSelf})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, ErrCodePaymentInternal,
 			fmt.Sprintf("Error creating nonce: %s", err.Error()))
@@ -131,12 +133,12 @@ func requestPayment(w http.ResponseWriter, r *http.Request, walletInstance walle
 
 func processPayment(
 	ctx context.Context,
-	walletInstance wallet.PaymentInterface,
+	walletInstance interfaces.Payment,
 	paymentData *Payment,
 	identityKey string,
 	price int,
 ) (*PaymentInfo, error) {
-	valid, err := walletInstance.VerifyNonce(ctx, paymentData.DerivationPrefix)
+	valid, err := sdkUtils.VerifyNonce(ctx, paymentData.DerivationPrefix, walletInstance, wallet.Counterparty{Type: wallet.CounterpartyTypeSelf})
 	if err != nil {
 		return nil, fmt.Errorf("error verifying nonce: %w", err)
 	}
@@ -150,8 +152,8 @@ func processPayment(
 		Outputs: []wallet.InternalizeOutput{
 			{
 				OutputIndex: 0,
-				Protocol:    "wallet payment",
-				PaymentRemittance: &wallet.PaymentRemittance{
+				Protocol:    wallet.InternalizeProtocolWalletPayment,
+				PaymentRemittance: &wallet.Payment{
 					DerivationPrefix:  paymentData.DerivationPrefix,
 					DerivationSuffix:  paymentData.DerivationSuffix,
 					SenderIdentityKey: identityKey,
@@ -159,7 +161,9 @@ func processPayment(
 			},
 		},
 		Description: "Payment for request",
-	})
+	},
+		identityKey,
+	)
 
 	if err != nil {
 		return nil, fmt.Errorf("payment processing failed: %w", err)

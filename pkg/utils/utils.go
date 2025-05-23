@@ -13,9 +13,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/transport"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-bsv-middleware/pkg/constants"
+	"github.com/bsv-blockchain/go-bsv-middleware/pkg/interfaces"
+	"github.com/bsv-blockchain/go-sdk/auth"
+	sdkUtils "github.com/bsv-blockchain/go-sdk/auth/utils"
+	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // RequestData holds the request information used to create auth headers
@@ -28,22 +30,22 @@ type RequestData struct {
 }
 
 // PrepareInitialRequestBody prepares the initial request body
-func PrepareInitialRequestBody(walletInstance wallet.WalletInterface) transport.AuthMessage {
-	opts := wallet.GetPublicKeyArgs{IdentityKey: true}
-	clientIdentityKey, err := walletInstance.GetPublicKey(&opts, "")
+func PrepareInitialRequestBody(ctx context.Context, walletInstance interfaces.Wallet) auth.AuthMessage {
+	args := wallet.GetPublicKeyArgs{IdentityKey: true}
+	clientIdentityKey, err := walletInstance.GetPublicKey(ctx, args, "")
 	if err != nil {
 		panic(err)
 	}
 
-	initialNonce, err := walletInstance.CreateNonce(context.Background())
+	initialNonce, err := sdkUtils.CreateNonce(ctx, walletInstance, wallet.Counterparty{Type: wallet.CounterpartyTypeSelf})
 	if err != nil {
 		panic(err)
 	}
 
-	initialRequest := transport.AuthMessage{
-		Version:      "0.1",
-		MessageType:  "initialRequest",
-		IdentityKey:  clientIdentityKey.PublicKey.ToDERHex(),
+	initialRequest := auth.AuthMessage{
+		Version:      auth.AUTH_VERSION,
+		MessageType:  auth.MessageTypeInitialRequest,
+		IdentityKey:  clientIdentityKey.PublicKey,
 		InitialNonce: initialNonce,
 	}
 
@@ -51,64 +53,143 @@ func PrepareInitialRequestBody(walletInstance wallet.WalletInterface) transport.
 }
 
 // PrepareGeneralRequestHeaders prepares the general request headers
-func PrepareGeneralRequestHeaders(walletInstance wallet.WalletInterface, previousResponse *transport.AuthMessage, requestData RequestData) (map[string]string, error) {
+func PrepareGeneralRequestHeaders(ctx context.Context, walletInstance interfaces.Wallet, previousResponse *auth.AuthMessage, requestData RequestData) (map[string]string, error) {
 	serverIdentityKey := previousResponse.IdentityKey
 	serverNonce := previousResponse.InitialNonce
 
 	opts := wallet.GetPublicKeyArgs{IdentityKey: true}
-	clientIdentityKey, err := walletInstance.GetPublicKey(&opts, "")
+	clientIdentityKey, err := walletInstance.GetPublicKey(ctx, opts, "")
 	if err != nil {
-		return nil, errors.New("failed to get client identity key")
+		return nil, fmt.Errorf("failed to get client identity key: %w", err)
+	}
+
+	if clientIdentityKey.PublicKey == nil {
+		return nil, errors.New("client identity key is nil")
 	}
 
 	requestID := generateRandom()
 	encodedRequestID := base64.StdEncoding.EncodeToString(requestID)
 
-	newNonce, err := walletInstance.CreateNonce(context.Background())
+	newNonce, err := sdkUtils.CreateNonce(ctx, walletInstance, wallet.Counterparty{Type: wallet.CounterpartyTypeSelf})
 	if err != nil {
-		return nil, errors.New("failed to create new nonce")
+		return nil, fmt.Errorf("failed to create new nonce: %w", err)
 	}
 
 	var writer bytes.Buffer
 
-	writer.Write(requestID)
+	_, err = writer.Write(requestID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write request ID: %w", err)
+	}
 
 	request := getOrPrepareTempRequest(requestData)
 	err = WriteRequestData(request, &writer)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to write request data: %w", err)
 	}
 
-	key, err := ec.PublicKeyFromString(serverIdentityKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse identity key, %w", err)
-	}
+	protocol := wallet.Protocol{SecurityLevel: wallet.SecurityLevelEveryAppAndCounterparty, Protocol: auth.AUTH_PROTOCOL_ID}
 
 	baseArgs := wallet.EncryptionArgs{
-		ProtocolID: wallet.DefaultAuthProtocol,
+		ProtocolID: protocol,
 		Counterparty: wallet.Counterparty{
 			Type:         wallet.CounterpartyTypeOther,
-			Counterparty: key,
+			Counterparty: serverIdentityKey,
 		},
 		KeyID: fmt.Sprintf("%s %s", newNonce, serverNonce),
 	}
-	createSignatureArgs := &wallet.CreateSignatureArgs{
+	createSignatureArgs := wallet.CreateSignatureArgs{
 		EncryptionArgs: baseArgs,
 		Data:           writer.Bytes(),
 	}
 
-	signature, err := walletInstance.CreateSignature(createSignatureArgs, "")
+	signature, err := walletInstance.CreateSignature(ctx, createSignatureArgs, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create signature, %w", err)
+		return nil, fmt.Errorf("failed to create signature: %w", err)
 	}
 
 	headers := map[string]string{
-		"x-bsv-auth-version":      "0.1",
-		"x-bsv-auth-identity-key": clientIdentityKey.PublicKey.ToDERHex(),
-		"x-bsv-auth-nonce":        newNonce,
-		"x-bsv-auth-your-nonce":   serverNonce,
-		"x-bsv-auth-signature":    hex.EncodeToString(signature.Signature.Serialize()),
-		"x-bsv-auth-request-id":   encodedRequestID,
+		constants.HeaderVersion:     "0.1",
+		constants.HeaderIdentityKey: clientIdentityKey.PublicKey.ToDERHex(),
+		constants.HeaderNonce:       newNonce,
+		constants.HeaderYourNonce:   serverNonce,
+		constants.HeaderRequestID:   encodedRequestID,
+	}
+
+	if signature != nil {
+		headers[constants.HeaderSignature] = hex.EncodeToString(signature.Signature.Serialize())
+	}
+
+	return headers, nil
+}
+
+// PrepareCertificateResponseHeaders prepares the certificate response headers
+func PrepareCertificateResponseHeaders(ctx context.Context, walletInstance interfaces.Wallet, previousResponse *auth.AuthMessage, requestData RequestData) (map[string]string, error) {
+	serverIdentityKey := previousResponse.IdentityKey
+	serverNonce := previousResponse.InitialNonce
+
+	opts := wallet.GetPublicKeyArgs{IdentityKey: true}
+	clientIdentityKey, err := walletInstance.GetPublicKey(ctx, opts, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client identity key: %w", err)
+	}
+
+	if clientIdentityKey.PublicKey == nil {
+		return nil, fmt.Errorf("client identity key is nil")
+	}
+
+	requestID := generateRandom()
+	encodedRequestID := base64.StdEncoding.EncodeToString(requestID)
+
+	newNonce, err := sdkUtils.CreateNonce(ctx, walletInstance, wallet.Counterparty{Type: wallet.CounterpartyTypeSelf})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new nonce: %w", err)
+	}
+
+	var writer bytes.Buffer
+
+	_, err = writer.Write(requestID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write request ID: %w", err)
+	}
+
+	request := getOrPrepareTempRequest(requestData)
+	err = WriteRequestData(request, &writer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write request data: %w", err)
+	}
+
+	protocol := wallet.Protocol{SecurityLevel: wallet.SecurityLevelEveryAppAndCounterparty, Protocol: auth.AUTH_PROTOCOL_ID}
+
+	baseArgs := wallet.EncryptionArgs{
+		ProtocolID: protocol,
+		Counterparty: wallet.Counterparty{
+			Type:         wallet.CounterpartyTypeOther,
+			Counterparty: serverIdentityKey,
+		},
+		KeyID: fmt.Sprintf("%s %s", newNonce, serverNonce),
+	}
+	createSignatureArgs := wallet.CreateSignatureArgs{
+		EncryptionArgs: baseArgs,
+		Data:           writer.Bytes(),
+	}
+
+	signature, err := walletInstance.CreateSignature(ctx, createSignatureArgs, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create signature: %w", err)
+	}
+
+	headers := map[string]string{
+		constants.HeaderVersion:     "0.1",
+		constants.HeaderIdentityKey: clientIdentityKey.PublicKey.ToDERHex(),
+		constants.HeaderNonce:       newNonce,
+		constants.HeaderYourNonce:   serverNonce,
+		constants.HeaderRequestID:   encodedRequestID,
+		constants.HeaderMessageType: "certificateResponse",
+	}
+
+	if signature != nil {
+		headers[constants.HeaderSignature] = hex.EncodeToString(signature.Signature.Serialize())
 	}
 
 	return headers, nil
@@ -118,56 +199,73 @@ func PrepareGeneralRequestHeaders(walletInstance wallet.WalletInterface, previou
 func WriteRequestData(request *http.Request, writer *bytes.Buffer) error {
 	err := WriteVarIntNum(writer, len(request.Method))
 	if err != nil {
-		return errors.New("failed to write method length")
+		return fmt.Errorf("failed to write method length: %w", err)
 	}
-	writer.Write([]byte(request.Method))
+	_, err = writer.Write([]byte(request.Method))
+	if err != nil {
+		return fmt.Errorf("failed to write method: %w", err)
+	}
 
 	err = WriteVarIntNum(writer, len(request.URL.Path))
 	if err != nil {
-		return errors.New("failed to write path length")
+		return fmt.Errorf("failed to write path length: %w", err)
 	}
-	writer.Write([]byte(request.URL.Path))
+	_, err = writer.Write([]byte(request.URL.Path))
+	if err != nil {
+		return fmt.Errorf("failed to write path: %w", err)
+	}
 
 	query := request.URL.RawQuery
 	if len(query) > 0 {
 		searchAsArray := []byte(query)
 		err = WriteVarIntNum(writer, len(searchAsArray))
 		if err != nil {
-			return errors.New("failed to write query length")
+			return fmt.Errorf("failed to write query length: %w", err)
 		}
-		writer.Write([]byte(query))
+		_, err = writer.Write([]byte(query))
+		if err != nil {
+			return fmt.Errorf("failed to write query: %w", err)
+		}
 	} else {
 		err = WriteVarIntNum(writer, -1)
 		if err != nil {
-			return errors.New("failed to write -1 as query length")
+			return fmt.Errorf("failed to write -1 as query length: %w", err)
 		}
 	}
 
 	includedHeaders := ExtractHeaders(request.Header)
 	err = WriteVarIntNum(writer, len(includedHeaders))
 	if err != nil {
-		return errors.New("failed to write headers length")
+		return fmt.Errorf("failed to write headers length: %w", err)
 	}
 
 	for _, header := range includedHeaders {
 		headerKeyBytes := []byte(header[0])
 		err = WriteVarIntNum(writer, len(headerKeyBytes))
 		if err != nil {
-			return errors.New("failed to write header key length")
+			return fmt.Errorf("failed to write header key length: %w", err)
 		}
-		writer.Write(headerKeyBytes)
+
+		_, err = writer.Write(headerKeyBytes)
+		if err != nil {
+			return fmt.Errorf("failed to write header key: %w", err)
+		}
 
 		headerValueBytes := []byte(header[1])
 		err = WriteVarIntNum(writer, len(headerValueBytes))
 		if err != nil {
-			return errors.New("failed to write header value length")
+			return fmt.Errorf("failed to write header value length: %w", err)
 		}
-		writer.Write(headerValueBytes)
+
+		_, err = writer.Write(headerValueBytes)
+		if err != nil {
+			return fmt.Errorf("failed to write header value: %w", err)
+		}
 	}
 
 	err = WriteBodyToBuffer(request, writer)
 	if err != nil {
-		return errors.New("failed to write request body")
+		return fmt.Errorf("failed to write request body: %w", err)
 	}
 
 	return nil
@@ -178,7 +276,7 @@ func WriteRequestData(request *http.Request, writer *bytes.Buffer) error {
 func WriteVarIntNum(writer *bytes.Buffer, num int) error {
 	err := binary.Write(writer, binary.LittleEndian, int64(num))
 	if err != nil {
-		return errors.New("failed to write varint number")
+		return fmt.Errorf("failed to write varint number: %w", err)
 	}
 	return nil
 }
@@ -188,7 +286,7 @@ func ReadVarIntNum(reader *bytes.Reader) (int64, error) {
 	var intByte int64
 	err := binary.Read(reader, binary.LittleEndian, &intByte)
 	if err != nil {
-		return 0, errors.New("failed to read varint number")
+		return 0, fmt.Errorf("failed to read varint number: %w", err)
 	}
 
 	return intByte, nil
@@ -200,7 +298,7 @@ func ExtractHeaders(headers http.Header) [][]string {
 	for k, v := range headers {
 		k = strings.ToLower(k)
 		if (strings.HasPrefix(k, "x-bsv-") || k == "content-type" || k == "authorization") &&
-			!strings.HasPrefix(k, "x-bsv-auth") {
+			!strings.HasPrefix(k, constants.AuthHeaderPrefix) {
 			includedHeaders = append(includedHeaders, []string{k, v[0]})
 		}
 	}
@@ -212,28 +310,33 @@ func WriteBodyToBuffer(req *http.Request, buf *bytes.Buffer) error {
 	if req.Body == nil {
 		err := WriteVarIntNum(buf, -1)
 		if err != nil {
-			return errors.New("failed to write -1 for empty body")
+			return fmt.Errorf("failed to write -1 for empty body: %w", err)
 		}
 		return nil
 	}
 
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return errors.New("failed to read request body")
+		return fmt.Errorf("failed to read request body: %w", err)
 	}
 
 	if len(body) > 0 {
 		err = WriteVarIntNum(buf, len(body))
 		if err != nil {
-			return errors.New("failed to write body length")
+			return fmt.Errorf("failed to write body length: %w", err)
 		}
-		buf.Write(body)
+
+		_, err = buf.Write(body)
+		if err != nil {
+			return fmt.Errorf("failed to write body: %w", err)
+		}
+
 		return nil
 	}
 
 	err = WriteVarIntNum(buf, -1)
 	if err != nil {
-		return errors.New("failed to write -1 for empty body")
+		return fmt.Errorf("failed to write -1 for empty body: %w", err)
 	}
 	return nil
 }

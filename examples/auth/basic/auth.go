@@ -1,7 +1,8 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
@@ -9,51 +10,55 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware/auth"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
-	walletFixtures "github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet/test"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/transport"
+	exampleWallet "github.com/bsv-blockchain/go-bsv-middleware-examples/example-wallet"
+	middleware "github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware/auth"
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/utils"
+	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/go-resty/resty/v2"
 )
 
+const (
+	serverPrivateKeyHex = "5a4d867377bd44eba1cecd0806c16f24e293f7e218c162b1177571edaeeaecef"
+	clientPrivateKeyHex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+	serverPort          = ":8080"
+)
+
 func main() {
-	fmt.Println("BSV Auth middleware - Demo")
+	log.Println("BSV Auth middleware - Demo")
 	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
 	logger := slog.New(logHandler)
 
-	sPrivKey, err := ec.PrivateKeyFromHex(walletFixtures.ServerPrivateKeyHex)
+	sPrivKey, err := ec.PrivateKeyFromHex(serverPrivateKeyHex)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to create server private key: %v", err)
 	}
 
-	serverMockedWallet := wallet.NewMockWallet(sPrivKey, walletFixtures.DefaultNonces...)
-	fmt.Println("✓ Server mockWallet created")
+	serverWallet, err := exampleWallet.NewExtendedProtoWallet(sPrivKey)
+	if err != nil {
+		log.Fatalf("Failed to create server wallet: %v", err)
+	}
 
-	// Create authentication middleware with:
-	// - authentication enabled
-	// - custom logger
-	// - mocked wallet with predefined nonces
-	// - server private key
-	opts := auth.Config{
+	log.Println("✓ Server wallet created")
+
+	opts := middleware.Config{
 		AllowUnauthenticated: false,
 		Logger:               logger,
-		Wallet:               serverMockedWallet,
+		Wallet:               serverWallet,
 	}
-	middleware, err := auth.New(opts)
+	midd, err := middleware.New(opts)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to create middleware: %v", err)
 	}
-
-	fmt.Println("✓ Auth middleware created")
+	log.Println("✓ Auth middleware created")
 
 	mux := http.NewServeMux()
-	mux.Handle("/", middleware.Handler(http.HandlerFunc(pingHandler)))
-	mux.Handle("/ping", middleware.Handler(http.HandlerFunc(pingHandler)))
+	mux.Handle("/", midd.Handler(http.HandlerFunc(pingHandler)))
+	mux.Handle("/ping", midd.Handler(http.HandlerFunc(pingHandler)))
 
 	srv := &http.Server{
-		Addr:    ":8080",
+		Addr:    serverPort,
 		Handler: mux,
 	}
 
@@ -64,84 +69,107 @@ func main() {
 		}
 	}()
 	time.Sleep(1 * time.Second)
+	log.Println("✓ HTTP Server started")
 
-	fmt.Println("✓ HTTP Server started")
-
-	// Create mocked client wallet with predefined client nonces and client identity key
-	cPrivKey, err := ec.PrivateKeyFromHex(walletFixtures.ServerPrivateKeyHex)
+	cPrivKey, err := ec.PrivateKeyFromHex(clientPrivateKeyHex)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to create client private key: %v", err)
 	}
-	mockedWallet := wallet.NewMockWallet(cPrivKey, walletFixtures.ClientNonces...)
-	fmt.Println("✓ Client mockWallet created")
 
-	fmt.Println("\n📡 STEP 1: Sending non general request to /.well-known/auth endpoint")
-	responseData := callInitialRequest(mockedWallet)
-	fmt.Println("✓ Auth completed")
+	clientWallet, err := exampleWallet.NewExtendedProtoWallet(cPrivKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	fmt.Println("\n📡 STEP 2: Sending general request to test authorization")
-	callPingEndpoint(mockedWallet, responseData)
-	fmt.Println("✓ General request completed")
+	log.Println("✓ Client wallet created")
+	log.Println("\n📡 STEP 1: Sending non general request to /.well-known/auth endpoint")
+	responseData, err := callInitialRequest(clientWallet)
+	if err != nil {
+		log.Fatalf("Failed to call initial request: %v", err)
+	}
+
+	log.Println("✓ Auth completed")
+
+	log.Println("\n📡 STEP 2: Sending general request to test authorization")
+	callPingEndpoint(clientWallet, responseData)
+	log.Println("✓ General request completed")
+
+	time.Sleep(2 * time.Second)
+	log.Println("\n✅ Demo completed successfully")
 }
 
+// pingHandler handles the ping requests
 func pingHandler(w http.ResponseWriter, r *http.Request) {
+	identityKey, ok := middleware.GetIdentityFromContext(r.Context())
+	if !ok {
+		log.Printf("Warning: No identity key in context")
+	} else {
+		log.Printf("Request from identity: %s", identityKey)
+	}
 	_, err := w.Write([]byte("Pong!"))
 	if err != nil {
 		log.Printf("Error writing ping response: %v", err)
 	}
 }
 
-func callInitialRequest(mockedWallet wallet.WalletInterface) *transport.AuthMessage {
-	requestData := utils.PrepareInitialRequestBody(mockedWallet)
-	url := "http://localhost:8080/.well-known/auth"
+// callInitialRequest sends a request to the /.well-known/auth endpoint
+func callInitialRequest(clientWallet wallet.Interface) (*auth.AuthMessage, error) {
+	initialRequest := utils.PrepareInitialRequestBody(context.Background(), clientWallet)
+	url := "http://localhost" + serverPort + "/.well-known/auth"
 
 	client := resty.New()
-	var result transport.AuthMessage
-	var errMsg any
+	var result auth.AuthMessage
 
 	resp, err := client.R().
 		SetHeader("Content-Type", "application/json").
-		SetBody(requestData).
+		SetBody(initialRequest).
 		SetResult(&result).
-		SetError(&errMsg).
 		Post(url)
 
 	if err != nil {
-		log.Fatalf("Request failed: %v", err)
+		log.Printf("Request failed: %v", err)
+		return nil, err
 	}
 
 	if resp.IsError() {
-		log.Fatalf("Request failed: Status %d, Body: %s", resp.StatusCode(), resp.String())
+		errMsg := resp.String()
+		log.Printf("Server returned error (%d): %s", resp.StatusCode(), errMsg)
+		return nil, errors.New("server error occurred")
 	}
 
-	fmt.Println("Response from server: ", resp.String())
+	log.Println("Response from server: ", resp.String())
 
-	fmt.Println("🔑 Response Headers:")
+	log.Println("🔑 Response Headers:")
 	for key, value := range resp.Header() {
 		lowerKey := strings.ToLower(key)
 		if strings.Contains(lowerKey, "x-bsv-auth") {
-			fmt.Println(lowerKey, strings.Join(value, ", "))
+			log.Println(lowerKey, strings.Join(value, ", "))
 		}
 	}
 
-	return &result
+	return &result, nil
 }
 
-func callPingEndpoint(mockedWallet wallet.WalletInterface, response *transport.AuthMessage) {
-	url := "http://localhost:8080/ping"
+// callPingEndpoint sends a request to the /ping endpoint
+func callPingEndpoint(clientWallet wallet.Interface, response *auth.AuthMessage) {
+	url := "http://localhost" + serverPort + "/ping"
+
+	modifiedResponse := *response
+	modifiedResponse.InitialNonce = response.Nonce
 
 	requestData := utils.RequestData{
 		Method: http.MethodGet,
 		URL:    url,
 	}
-	headers, err := utils.PrepareGeneralRequestHeaders(mockedWallet, response, requestData)
+
+	headers, err := utils.PrepareGeneralRequestHeaders(context.Background(), clientWallet, &modifiedResponse, requestData)
 	if err != nil {
 		log.Fatalf("Failed to prepare general request headers: %v", err)
 	}
 
-	fmt.Println("🔑 Request headers")
+	log.Println("🔑 Request headers")
 	for key, value := range headers {
-		fmt.Println(key, value)
+		log.Println(key, value)
 	}
 
 	client := resty.New()
@@ -155,11 +183,11 @@ func callPingEndpoint(mockedWallet wallet.WalletInterface, response *transport.A
 
 	log.Printf("Response from server: %s", resp.String())
 
-	fmt.Println("🔑 Response Headers:")
+	log.Println("🔑 Response Headers:")
 	for key, value := range resp.Header() {
 		lowerKey := strings.ToLower(key)
 		if strings.Contains(lowerKey, "x-bsv-auth") {
-			fmt.Println(lowerKey, strings.Join(value, ", "))
+			log.Println(lowerKey, strings.Join(value, ", "))
 		}
 	}
 

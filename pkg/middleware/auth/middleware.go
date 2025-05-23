@@ -1,152 +1,204 @@
 package auth
 
 import (
-	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/bsv-blockchain/go-bsv-middleware/pkg/constants"
+	"github.com/bsv-blockchain/go-bsv-middleware/pkg/interfaces"
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/internal/logging"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/sessionmanager"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/temporary/wallet"
-	"github.com/bsv-blockchain/go-bsv-middleware/pkg/transport"
 	httptransport "github.com/bsv-blockchain/go-bsv-middleware/pkg/transport/http"
+	"github.com/bsv-blockchain/go-sdk/auth"
+	sdkUtils "github.com/bsv-blockchain/go-sdk/auth/utils"
 )
 
-// Middleware implements BRC-103/104 authentication
+// Middleware is an HTTP middleware that handles authentication messages.
 type Middleware struct {
-	wallet               wallet.WalletInterface
-	sessionManager       sessionmanager.SessionManagerInterface
-	transport            transport.TransportInterface
+	wallet               interfaces.Wallet
+	peer                 *auth.Peer
+	sessionManager       auth.SessionManager
+	transport            auth.Transport
 	allowUnauthenticated bool
 	logger               *slog.Logger
 }
 
-// ResponseRecorder is a custom ResponseWriter to capture response body and status
-type responseRecorder struct {
-	http.ResponseWriter
-	statusCode int
-	body       *bytes.Buffer
-	written    bool
-}
-
-func newResponseRecorder(w http.ResponseWriter) *responseRecorder {
-	return &responseRecorder{
-		ResponseWriter: w,
-		body:           &bytes.Buffer{},
-		statusCode:     http.StatusOK,
-	}
-}
-
-// WriteHeader writes status code
-func (r *responseRecorder) WriteHeader(code int) {
-	r.statusCode = code
-}
-
-// Write writes response body to internal buffer
-func (r *responseRecorder) Write(b []byte) (int, error) {
-	if r.written {
-		return 0, errors.New("response already written")
-	}
-
-	n, err := r.body.Write(b)
-	if err != nil {
-		return 0, errors.New("failed to write response")
-	}
-
-	r.written = true
-	return n, nil
-}
-
-// Finalize writes the captured headers and body
-func (r *responseRecorder) Finalize() error {
-	r.ResponseWriter.WriteHeader(r.statusCode)
-	body := strings.TrimSpace(r.body.String())
-	_, err := r.ResponseWriter.Write([]byte(body))
-	if err != nil {
-		return errors.New("failed to write response")
-	}
-
-	return nil
-}
-
-// New creates a new auth middleware
-func New(opts Config) (*Middleware, error) {
-	if opts.SessionManager == nil {
-		opts.SessionManager = sessionmanager.NewSessionManager()
-	}
-
-	if opts.Wallet == nil {
+// New creates a new instance of the auth middleware.
+func New(cfg Config) (*Middleware, error) {
+	if cfg.Wallet == nil {
 		return nil, errors.New("wallet is required")
 	}
 
-	if opts.Logger == nil {
-		opts.Logger = slog.New(slog.DiscardHandler)
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	middlewareLogger := logging.Child(logger, "auth-middleware")
+
+	sessionManager := cfg.SessionManager
+	if sessionManager == nil {
+		sessionManager = auth.NewSessionManager()
 	}
 
-	middlewareLogger := logging.Child(opts.Logger, "auth-middleware")
-
-	if opts.OnCertificatesReceived == nil && opts.CertificatesToRequest != nil {
+	if cfg.OnCertificatesReceived == nil && cfg.CertificatesToRequest != nil {
 		return nil, errors.New("OnCertificatesReceived callback is required when certificates are requested")
 	}
 
-	if opts.OnCertificatesReceived != nil && opts.CertificatesToRequest == nil {
+	if cfg.OnCertificatesReceived != nil && cfg.CertificatesToRequest == nil {
 		return nil, errors.New("OnCertificatesReceived callback is set but no certificates are requested")
 	}
 
-	middlewareLogger.Debug(" Creating new auth middleware")
+	transportCfg := httptransport.TransportConfig{
+		Wallet:                 cfg.Wallet,
+		SessionManager:         sessionManager,
+		Logger:                 logger,
+		CertificatesToRequest:  cfg.CertificatesToRequest,
+		OnCertificatesReceived: cfg.OnCertificatesReceived,
+	}
 
-	t := httptransport.New(opts.Wallet, opts.SessionManager, opts.AllowUnauthenticated, opts.Logger, opts.CertificatesToRequest, opts.OnCertificatesReceived)
+	t := httptransport.New(transportCfg)
 
-	middlewareLogger.Debug(" transport created")
+	peerCfg := &auth.PeerOptions{
+		Wallet:                cfg.Wallet,
+		Transport:             t,
+		SessionManager:        sessionManager,
+		CertificatesToRequest: cfg.CertificatesToRequest,
+	}
+	peer := auth.NewPeer(peerCfg)
+	peer.ListenForCertificatesReceived(cfg.OnCertificatesReceived)
 
 	return &Middleware{
-		wallet:               opts.Wallet,
-		sessionManager:       opts.SessionManager,
+		peer:                 peer,
+		wallet:               cfg.Wallet,
+		sessionManager:       sessionManager,
 		transport:            t,
-		allowUnauthenticated: opts.AllowUnauthenticated,
+		allowUnauthenticated: cfg.AllowUnauthenticated,
 		logger:               middlewareLogger,
 	}, nil
 }
 
-// Handler returns standard http middleware
+// Handler returns an HTTP handler that processes authentication messages.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		recorder := newResponseRecorder(w)
-		if req.Method == http.MethodPost && req.URL.Path == "/.well-known/auth" {
-			err := m.transport.HandleNonGeneralRequest(req, recorder)
-			if err != nil {
-				http.Error(recorder, err.Error(), http.StatusUnauthorized)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wrappedWriter := httptransport.WrapResponseWriter(w)
+
+		ctx := context.WithValue(r.Context(), httptransport.RequestKey, r)
+		ctx = context.WithValue(ctx, httptransport.ResponseKey, wrappedWriter)
+		ctx = context.WithValue(ctx, httptransport.NextKey, func() {
+			next.ServeHTTP(wrappedWriter, r)
+		})
+
+		m.logger.Debug("Processing request",
+			slog.String("path", r.URL.Path),
+			slog.String("method", r.Method))
+
+		authMsg, err := httptransport.ParseAuthMessageFromRequest(r)
+		if err != nil {
+			m.logger.Error("Failed to parse auth message", slog.String("error", err.Error()))
+			http.Error(wrappedWriter, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if authMsg == nil {
+			if m.allowUnauthenticated {
+				r = r.WithContext(context.WithValue(r.Context(), httptransport.IdentityKey, constants.UnknownParty))
+				next.ServeHTTP(wrappedWriter, r)
+				return
+			} else {
+				http.Error(wrappedWriter, "Authentication required", http.StatusUnauthorized)
+				return
 			}
-			createResponse(recorder)
+		}
+
+		// At this point, authMsg.IdentityKey should always be set by ParseAuthMessageFromRequest
+		// If it's not set, that's an internal error
+		if authMsg.IdentityKey == nil {
+			m.logger.Error("Internal error: ParseAuthMessageFromRequest returned message with nil IdentityKey")
+			http.Error(wrappedWriter, "Internal authentication error", http.StatusInternalServerError)
 			return
 		}
 
-		req, authMsg, err := m.transport.HandleGeneralRequest(req, recorder)
+		callback, err := m.transport.GetRegisteredOnData()
 		if err != nil {
-			http.Error(recorder, err.Error(), http.StatusUnauthorized)
-			createResponse(recorder)
+			m.logger.Error("No message handler registered", slog.String("error", err.Error()))
+			http.Error(wrappedWriter, "Server configuration error", http.StatusInternalServerError)
 			return
 		}
 
-		next.ServeHTTP(recorder, req)
+		if err := callback(ctx, authMsg); err != nil {
+			m.logger.Error("Failed to process auth message", slog.String("error", err.Error()))
 
-		err = m.transport.HandleResponse(req, recorder, recorder.body.Bytes(), recorder.statusCode, authMsg)
-		if err != nil {
-			http.Error(recorder, err.Error(), http.StatusInternalServerError)
-			createResponse(recorder)
+			statusCode := http.StatusInternalServerError
+			errMsg := "Internal server error"
+
+			switch {
+			case errors.Is(err, auth.ErrNotAuthenticated):
+				statusCode = http.StatusUnauthorized
+				errMsg = "Authentication failed"
+			case errors.Is(err, auth.ErrMissingCertificate):
+				statusCode = http.StatusBadRequest
+				var certTypes sdkUtils.RequestedCertificateTypeIDAndFieldList
+				if m.peer != nil && m.peer.CertificatesToRequest != nil {
+					certTypes = m.peer.CertificatesToRequest.CertificateTypes
+				}
+				errMsg = prepareMissingCertificateTypesErrorMsg(certTypes)
+			case errors.Is(err, auth.ErrInvalidNonce):
+				statusCode = http.StatusBadRequest
+				errMsg = "Invalid nonce"
+			case errors.Is(err, auth.ErrInvalidMessage):
+				statusCode = http.StatusBadRequest
+				errMsg = "Invalid message format"
+			case errors.Is(err, auth.ErrSessionNotFound):
+				statusCode = http.StatusUnauthorized
+				errMsg = "Session not found"
+			}
+
+			http.Error(wrappedWriter, errMsg, statusCode)
 			return
 		}
 
-		createResponse(recorder)
+		if !httptransport.HasBeenWritten(wrappedWriter) {
+			r = r.WithContext(context.WithValue(r.Context(), httptransport.IdentityKey, authMsg.IdentityKey.ToDERHex()))
+			next.ServeHTTP(wrappedWriter, r)
+		}
 	})
 }
 
-func createResponse(recorder *responseRecorder) {
-	err := recorder.Finalize()
-	if err != nil {
-		http.Error(recorder, err.Error(), http.StatusInternalServerError)
-		return
+// prepareMissingCertificateTypesErrorMsg prepares a user-friendly error message for missing certificate types.
+func prepareMissingCertificateTypesErrorMsg(missingCertTypes sdkUtils.RequestedCertificateTypeIDAndFieldList) string {
+	if len(missingCertTypes) == 0 {
+		return ""
 	}
+
+	var typesWithFields []string
+	var typesWithoutFields []string
+
+	for certType, fields := range missingCertTypes {
+		typeName := getReadableCertTypeName(certType)
+
+		if len(fields) > 0 {
+			fieldStr := fmt.Sprintf("%s (fields: %s)", typeName, strings.Join(fields, ", "))
+			typesWithFields = append(typesWithFields, fieldStr)
+		} else {
+			typesWithoutFields = append(typesWithoutFields, typeName)
+		}
+	}
+
+	withFields := ""
+	if len(typesWithFields) > 0 {
+		withFields = " with fields"
+	}
+	allMissing := append(typesWithFields, typesWithoutFields...)
+	return fmt.Sprintf("Missing required certificates%s: %s", withFields, strings.Join(allMissing, ", "))
+}
+
+// getReadableCertTypeName returns a shortened version of the certificate type ID for better readability.
+func getReadableCertTypeName(certTypeID string) string {
+	if len(certTypeID) > 16 && !strings.Contains(certTypeID, " ") {
+		return certTypeID[:8] + "..." + certTypeID[len(certTypeID)-8:]
+	}
+	return certTypeID
 }
